@@ -18,6 +18,7 @@ import test_risk_guard
 import test_secrets_util
 import test_order_manager
 import test_okx_demo
+import test_experiment_plan
 
 loader = unittest.defaultTestLoader
 suite = unittest.TestSuite([
@@ -26,7 +27,9 @@ suite = unittest.TestSuite([
     loader.loadTestsFromModule(test_engine),
     loader.loadTestsFromModule(test_strategy_sma),
     loader.loadTestsFromModule(test_sma200_experiment),
-    loader.loadTestsFromModule(test_order_store),
+    loader.loadTestsFromModule(test_experiment_plan),
+
+loader.loadTestsFromModule(test_order_store),
     loader.loadTestsFromModule(test_risk_guard),
     loader.loadTestsFromModule(test_secrets_util),
     loader.loadTestsFromModule(test_order_manager),
