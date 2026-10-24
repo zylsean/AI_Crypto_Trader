@@ -1,10 +1,13 @@
 import base64
 import hashlib
 import hmac
+import io
 import json
 import sys
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -14,9 +17,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from check_okx_demo import CANDIDATE_BASE_URLS, run_diagnosis
 from exchange_base import ExchangeError, ExchangeTimeout
-from okx_demo import OKXApiError, OKXDemoClient, sign
+import okx_demo
+from okx_demo import USER_AGENT, OKXApiError, OKXDemoClient, default_transport, sign
 from secrets_util import (
     MissingCredentials, credentials_path_warnings, load_credentials,
+    locate_credentials_file,
 )
 
 BASE = "https://openapi.okx.com"
@@ -199,6 +204,65 @@ class TestResponseHandling(unittest.TestCase):
             self.assertNotIn(value, text)
 
 
+class TestNonJsonAndTransport(unittest.TestCase):
+    def test_non_json_message_includes_readable_preview(self):
+        body = "<html><body><h1>Access denied by policy</h1></body></html>"
+        c, _ = client({("openapi.okx.com", "/api/v5/public/time"): (403, body)})
+        with self.assertRaises(ExchangeTimeout) as ctx:
+            c.get_server_time()
+        text = str(ctx.exception)
+        self.assertIn("403", text)
+        self.assertIn("Access denied by policy", text)
+        self.assertNotIn("<html>", text)
+
+    def test_preview_is_truncated(self):
+        c, _ = client({("openapi.okx.com", "/api/v5/public/time"): (502, "x" * 5000)})
+        with self.assertRaises(ExchangeTimeout) as ctx:
+            c.get_server_time()
+        self.assertLess(len(str(ctx.exception)), 300)
+
+    def test_empty_body_preview(self):
+        c, _ = client({("openapi.okx.com", "/api/v5/public/time"): (403, "")})
+        with self.assertRaises(ExchangeTimeout) as ctx:
+            c.get_server_time()
+        self.assertIn("（空）", str(ctx.exception))
+
+    def test_preview_redacts_secrets(self):
+        body = f"<p>bad request {KEY} {SECRET} {PASS}</p>"
+        c, _ = client({("openapi.okx.com", "/api/v5/account/config"): (400, body)})
+        with self.assertRaises(ExchangeTimeout) as ctx:
+            c.get_account_config()
+        for value in (KEY, SECRET, PASS):
+            self.assertNotIn(value, str(ctx.exception))
+
+    def test_user_agent_is_honest_and_present_on_all_requests(self):
+        self.assertNotIn("Mozilla", USER_AGENT)
+        c, t = client({
+            ("openapi.okx.com", "/api/v5/public/time"): ok([{"ts": "1"}]),
+            ("openapi.okx.com", "/api/v5/account/balance"): ok([{}]),
+        })
+        c.get_server_time()
+        c.get_balance()
+        for call in t.calls:
+            self.assertEqual(call["headers"]["User-Agent"], USER_AGENT)
+
+    def test_default_transport_returns_http_error_body_and_closes_it(self):
+        error = urllib.error.HTTPError(
+            "https://x", 403, "Forbidden", {}, io.BytesIO(b"blocked page"))
+        with mock.patch.object(okx_demo.urllib.request, "urlopen", side_effect=error):
+            status, text = default_transport("GET", "https://x", {}, None, 1.0)
+        self.assertEqual((status, text), (403, "blocked page"))
+        self.assertTrue(error.fp.closed)
+
+    def test_default_transport_network_error_becomes_timeout(self):
+        with mock.patch.object(
+                okx_demo.urllib.request, "urlopen",
+                side_effect=urllib.error.URLError("no route")):
+            with self.assertRaises(ExchangeTimeout) as ctx:
+                default_transport("GET", "https://x", {}, None, 1.0)
+        self.assertIn("URLError", str(ctx.exception))
+
+
 class TestClock(unittest.TestCase):
     def test_small_offset_ok(self):
         c, _ = client({("openapi.okx.com", "/api/v5/public/time"):
@@ -288,6 +352,45 @@ class TestCredentials(unittest.TestCase):
         self.assertEqual(credentials_path_warnings(self.dir / "c.json"), [])
 
 
+class TestLocateCredentialsFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.docs = Path(self.tmp.name) / "Documents"
+        self.project = self.docs / "AI_Crypto_Trader"
+        self.project.mkdir(parents=True)
+
+    def test_finds_file_next_to_project_folder(self):
+        beside = self.docs / "okx_demo_credentials.json"
+        beside.write_text("{}", encoding="utf-8")
+        found, misplaced = locate_credentials_file(
+            [beside, self.project / "okx_demo_credentials.json"], self.project)
+        self.assertEqual(found, beside)
+        self.assertEqual(misplaced, [])
+
+    def test_file_inside_project_is_reported_not_used(self):
+        inside = self.project / "okx_demo_credentials.json"
+        inside.write_text("{}", encoding="utf-8")
+        found, misplaced = locate_credentials_file(
+            [self.docs / "okx_demo_credentials.json", inside], self.project)
+        self.assertIsNone(found)
+        self.assertEqual(misplaced, [inside])
+
+    def test_nothing_found(self):
+        found, misplaced = locate_credentials_file(
+            [self.docs / "okx_demo_credentials.json"], self.project)
+        self.assertIsNone(found)
+        self.assertEqual(misplaced, [])
+
+    def test_first_existing_candidate_wins(self):
+        first = self.docs / "okx_demo_credentials.json"
+        second = Path(self.tmp.name) / "okx_demo_credentials.json"
+        first.write_text("{}", encoding="utf-8")
+        second.write_text("{}", encoding="utf-8")
+        found, _ = locate_credentials_file([first, second], self.project)
+        self.assertEqual(found, first)
+
+
 GOOD_CONFIG = {"perm": "read_only", "acctLv": "1", "feeType": "0", "uid": "123456789"}
 BALANCE = {"details": [{"ccy": "USDT", "cashBal": "100000"},
                        {"ccy": "BTC", "cashBal": "1"}]}
@@ -347,6 +450,44 @@ class TestDiagnosis(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("公共时间接口失败", "\n".join(lines))
 
+    def test_50101_on_some_hosts_gives_live_key_inference(self):
+        routes = {}
+        for host, code in (("openapi.okx.com", "50101"), ("us.okx.com", "50119")):
+            routes[(host, "/api/v5/public/time")] = ok([{"ts": str(int(NOW * 1000))}])
+            routes[(host, "/api/v5/account/config")] = err(
+                code, "APIKey does not match current environment.", status=401)
+        result, lines, _ = self.run_it(
+            routes, ["https://openapi.okx.com", "https://us.okx.com"])
+        text = "\n".join(lines)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["key_recognized_at"], ["https://openapi.okx.com"])
+        self.assertIn("推断（不是结论）", text)
+        self.assertIn("实盘 Key", text)
+
+    def test_only_50119_gives_no_recognition_inference(self):
+        routes = {}
+        for host in ("openapi.okx.com", "us.okx.com"):
+            routes[(host, "/api/v5/public/time")] = ok([{"ts": str(int(NOW * 1000))}])
+            routes[(host, "/api/v5/account/config")] = err(
+                "50119", "API key doesn't exist", status=401)
+        result, lines, _ = self.run_it(
+            routes, ["https://openapi.okx.com", "https://us.okx.com"])
+        self.assertEqual(result["key_recognized_at"], [])
+        self.assertNotIn("推断（不是结论）", "\n".join(lines))
+
+    def test_all_403_on_public_endpoint_explains_network_layer(self):
+        routes = {("*", "/api/v5/public/time"): (403, "<html>Forbidden</html>")}
+        result, lines, t = self.run_it(routes)
+        text = "\n".join(lines)
+        self.assertFalse(result["ok"])
+        self.assertIn("PUBLIC_ENDPOINT_FAILED", result["problems"])
+        self.assertIn("HTTP 403", text)
+        self.assertIn("不在 Key、域名或签名上", text)
+        self.assertIn("不提供绕过访问限制的功能", text)
+        # 凭证没有被用到：没有任何私有请求
+        self.assertFalse(any("OK-ACCESS-KEY" in c["headers"] for c in t.calls))
+        self.assertFalse(any(c["path"].startswith("/api/v5/account") for c in t.calls))
+
     def test_clock_offset_stops_diagnosis(self):
         routes = server_routes("openapi.okx.com", ts=str(int((NOW + 120) * 1000)))
         result, lines, t = self.run_it(routes)
@@ -384,4 +525,3 @@ class TestDiagnosis(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

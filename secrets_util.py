@@ -122,3 +122,21 @@ def load_credentials(file_path=None, environ=None, project_root=None):
     if missing:
         raise MissingCredentials("凭证文件缺少字段：" + ",".join(missing))
     return {f: data[f] for f in _FILE_FIELDS}
+
+
+def locate_credentials_file(candidates, project_root):
+    """
+    在候选位置中查找凭证文件。返回 (找到的路径或 None, 误放在项目目录内的路径列表)。
+    项目目录内的文件不会被采用（它有被提交到 Git 的风险），只会被报告出来。
+    """
+    found = None
+    misplaced = []
+    for candidate in candidates:
+        path = Path(candidate)
+        if not path.exists():
+            continue
+        if _is_inside(path, project_root):
+            misplaced.append(path)
+        elif found is None:
+            found = path
+    return found, misplaced

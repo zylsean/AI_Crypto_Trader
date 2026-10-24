@@ -161,6 +161,8 @@
   50004 表示接口超时，不代表请求成功或失败，必须再查询确认；模拟盘密钥创建路径与开发者文档一致
 - 注意：帮助中心把 www.okx.com 称为默认域名，开发者文档写的是 openapi.okx.com，两处不一致；
   以 check_okx_demo.py 的实测结果为准
+- 已实测（2b，模拟盘，2026-10-24）：openapi.okx.com 上公共时间、account/config、account/balance 均成功；
+  perm=read_only、feeType=0、acctLv=2；用实盘 Key 加模拟标志请求返回 50101，说明 50101 最常见的原因是 Key 类型不对
 
 ### 待核实（读官方对应页面，或在模拟盘实测）
 - 下单接口响应：外层 code 与 data 内 sCode 的组合，哪种情况算”已受理“、哪种算”被拒“

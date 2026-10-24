@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import socket
 import time
 import urllib.error
@@ -32,12 +33,24 @@ class OKXApiError(ExchangeError):
 HINTS = {
     "50119": "API Key 不存在。官方 FAQ 的首要线索：API 基址与账户所属地区不一致；"
              "同时确认用的是模拟盘 Key，而不是实盘 Key。",
-    "50101": "Key 与请求环境可能不匹配：核对是否用了模拟盘 Key，以及模拟标志。",
+    "50101": "Key 与请求环境不匹配。我们的请求总是带模拟标志，所以最常见的原因是："
+             "这是实盘 Key，而不是在"模拟交易"里创建的模拟 Key。",
     "50102": "时间戳超出允许误差：核对手机时间是否准确。",
     "50113": "签名可能无效：核对 Secret 和 Passphrase 是否抄对。",
     "50011": "请求过于频繁：稍后重试。",
     "50004": "接口超时：不代表请求成功或失败，必须再查询确认。",
 }
+
+
+# 如实标明客户端身份（不伪装成浏览器）
+USER_AGENT = "AI-Crypto-Trader/0.1 (read-only demo client)"
+
+
+def _snippet(text, limit=160):
+    """把响应开头整理成一小段可读文字：去掉 HTML 标签、压缩空白、截断。"""
+    text = re.sub(r"<[^>]*>", " ", str(text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] if text else "（空）"
 
 
 def sign(secret, timestamp, method, request_path, body=""):
@@ -56,7 +69,10 @@ def default_transport(method, url, headers, body, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
+        try:
+            return exc.code, exc.read().decode("utf-8", "replace")
+        finally:
+            exc.close()
     except (urllib.error.URLError, socket.timeout, OSError) as exc:
         raise ExchangeTimeout(f"network error: {type(exc).__name__}") from exc
 
@@ -112,6 +128,7 @@ class OKXDemoClient:
         headers = {
             "Content-Type": "application/json",
             "x-simulated-trading": "1",
+            "User-Agent": USER_AGENT,
         }
         if private:
             if not self._credentials:
@@ -136,7 +153,10 @@ class OKXDemoClient:
         try:
             payload = json.loads(text)
         except ValueError:
-            raise ExchangeTimeout(f"HTTP {status}: 响应不是 JSON") from None
+            preview = redact_text(_snippet(text), self._secrets())
+            raise ExchangeTimeout(
+                f"HTTP {status}: 响应不是 JSON；开头内容：{preview}"
+            ) from None
         if not isinstance(payload, dict) or "code" not in payload:
             raise ExchangeTimeout(f"HTTP {status}: 响应结构不符合预期")
         code = str(payload.get("code"))
