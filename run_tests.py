@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 
-# 一条命令运行全部测试（CSV 校验器 + 基准回测 + 回测引擎）
+# 一条命令运行全部测试（CSV 校验器 + 基准回测 + 回测引擎 + 均线策略）
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -10,12 +10,14 @@ if str(SCRIPT_DIR) not in sys.path:
 import csv_quality_check
 import test_backtest
 import test_engine
+import test_strategy_sma
 
 loader = unittest.defaultTestLoader
 suite = unittest.TestSuite([
     loader.loadTestsFromTestCase(csv_quality_check.TestCSVQuality),
     loader.loadTestsFromModule(test_backtest),
     loader.loadTestsFromModule(test_engine),
+    loader.loadTestsFromModule(test_strategy_sma),
 ])
 
 result = unittest.TextTestRunner(verbosity=1).run(suite)
