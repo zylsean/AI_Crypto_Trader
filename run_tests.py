@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 # 一条命令运行全部测试
-# （CSV 校验器 + 基准回测 + 回测引擎 + 均线策略 + 阶段 2a）
+# （CSV 校验器 + 基准回测 + 回测引擎 + 均线策略 + 阶段 2a + 阶段 2b）
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -16,6 +16,7 @@ import test_order_store
 import test_risk_guard
 import test_secrets_util
 import test_order_manager
+import test_okx_demo
 
 loader = unittest.defaultTestLoader
 suite = unittest.TestSuite([
@@ -27,6 +28,7 @@ suite = unittest.TestSuite([
     loader.loadTestsFromModule(test_risk_guard),
     loader.loadTestsFromModule(test_secrets_util),
     loader.loadTestsFromModule(test_order_manager),
+    loader.loadTestsFromModule(test_okx_demo),
 ])
 
 result = unittest.TextTestRunner(verbosity=1).run(suite)
