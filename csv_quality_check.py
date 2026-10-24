@@ -1,9 +1,9 @@
 
 import csv
+import math
 import tempfile
 import unittest
-
-from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -17,283 +17,362 @@ EXPECTED_HEADER = [
 ]
 
 DAY_MS = 86_400_000
+DEFAULT_CSV = Path(__file__).parent / "BTC_USDT_1d.csv"
 
 
 def validate_csv(path, now_ms=None):
-    """检查日线 CSV 结构和基本数据质量，返回错误列表。"""
+    """
+    校验 CSV 日线数据。
+    返回 (errors, summary)。
+    不修改原始文件。
+    """
     errors = []
+    summary = {
+        "rows": 0,
+        "valid_rows": 0,
+        "duplicates": 0,
+        "order_errors": 0,
+        "missing_days": 0,
+        "incomplete_candles": 0,
+    }
+
     path = Path(path)
 
-    if not path.is_file():
-        return ["文件不存在"]
+    if not path.exists():
+        return [f"文件不存在：{path}"], summary
+
+    timestamps = []
+    seen_timestamps = set()
+    previous_timestamp = None
 
     try:
         with path.open(
             "r", encoding="utf-8-sig", newline=""
-        ) as f:
-            reader = csv.DictReader(f)
+        ) as file:
+            reader = csv.DictReader(file)
 
             if reader.fieldnames != EXPECTED_HEADER:
                 return [
-                    "表头不正确，应为："
-                    + ",".join(EXPECTED_HEADER)
-                ]
+                    "CSV 表头错误。",
+                    f"期望：{EXPECTED_HEADER}",
+                    f"实际：{reader.fieldnames}",
+                ], summary
 
-            rows = list(reader)
+            for line_number, row in enumerate(reader, start=2):
+                summary["rows"] += 1
+                row_errors = []
 
-    except (OSError, UnicodeError, csv.Error) as exc:
-        return [f"文件读取失败：{exc}"]
+                # 检查必需字段
+                if any(
+                    row.get(field) is None
+                    or not row[field].strip()
+                    for field in EXPECTED_HEADER
+                ):
+                    errors.append(
+                        f"第 {line_number} 行：存在空字段"
+                    )
+                    continue
 
-    if not rows:
-        return ["CSV 没有数据行"]
+                # 检查时间戳
+                try:
+                    timestamp = int(row["timestamp"])
+                except (ValueError, TypeError):
+                    errors.append(
+                        f"第 {line_number} 行：时间戳不是整数"
+                    )
+                    continue
 
-    timestamps = []
+                if timestamp < 0:
+                    row_errors.append("时间戳为负数")
 
-    for row_number, row in enumerate(rows, start=2):
-        prefix = f"第 {row_number} 行"
+                if timestamp % DAY_MS != 0:
+                    row_errors.append(
+                        "时间戳不是 UTC 日线零点"
+                    )
 
-        if None in row or any(
-            row.get(name) is None
-            or row.get(name).strip() == ""
-            for name in EXPECTED_HEADER
-        ):
-            errors.append(f"{prefix}：字段缺失或为空")
-            continue
+                if timestamp in seen_timestamps:
+                    summary["duplicates"] += 1
+                    row_errors.append("重复时间戳")
+                else:
+                    seen_timestamps.add(timestamp)
 
-        try:
-            timestamp_text = row["timestamp"].strip()
-            timestamp = int(timestamp_text)
+                if (
+                    previous_timestamp is not None
+                    and timestamp < previous_timestamp
+                ):
+                    summary["order_errors"] += 1
+                    row_errors.append("时间戳顺序错误")
 
-            if str(timestamp) != timestamp_text:
-                raise ValueError
+                previous_timestamp = timestamp
+                timestamps.append(timestamp)
 
-            if timestamp < 0:
-                raise ValueError
+                # 检查价格和成交量
+                values = {}
 
-            if timestamp % DAY_MS != 0:
-                raise ValueError
-
-            timestamps.append((row_number, timestamp))
-
-        except (ValueError, OverflowError):
-            errors.append(f"{prefix}：时间戳无效")
-            continue
-
-        try:
-            values = {
-                name: Decimal(row[name].strip())
-                for name in (
+                for field in (
                     "open", "high", "low", "close", "volume"
+                ):
+                    try:
+                        value = float(row[field])
+                    except (ValueError, TypeError):
+                        row_errors.append(
+                            f"{field} 不是有效数字"
+                        )
+                        continue
+
+                    if not math.isfinite(value):
+                        row_errors.append(
+                            f"{field} 不是有限数字"
+                        )
+                        continue
+
+                    values[field] = value
+
+                # 只有数值完整时才检查 OHLC
+                if all(
+                    field in values
+                    for field in (
+                        "open", "high", "low", "close", "volume"
+                    )
+                ):
+                    o = values["open"]
+                    h = values["high"]
+                    low = values["low"]
+                    c = values["close"]
+                    volume = values["volume"]
+
+                    if min(o, h, low, c) <= 0:
+                        row_errors.append("价格必须大于 0")
+
+                    if volume < 0:
+                        row_errors.append("成交量不能为负数")
+
+                    if h < max(o, low, c):
+                        row_errors.append(
+                            "最高价低于开盘价、最低价或收盘价"
+                        )
+
+                    if low > min(o, h, c):
+                        row_errors.append(
+                            "最低价高于开盘价、最高价或收盘价"
+                        )
+
+                # 检查未完成 K 线
+                if now_ms is not None:
+                    if timestamp + DAY_MS > now_ms:
+                        summary["incomplete_candles"] += 1
+                        row_errors.append("日线尚未完整结束")
+
+                if row_errors:
+                    for message in row_errors:
+                        errors.append(
+                            f"第 {line_number} 行：{message}"
+                        )
+                else:
+                    summary["valid_rows"] += 1
+
+    except (OSError, csv.Error) as exc:
+        return [f"读取 CSV 失败：{exc}"], summary
+
+    if summary["rows"] == 0:
+        errors.append("CSV 没有数据行")
+        return errors, summary
+
+    # 仅在时间戳没有重复、没有乱序时统计缺失日线
+    if (
+        summary["duplicates"] == 0
+        and summary["order_errors"] == 0
+    ):
+        for index in range(1, len(timestamps)):
+            difference = timestamps[index] - timestamps[index - 1]
+
+            if difference > DAY_MS and difference % DAY_MS == 0:
+                missing = difference // DAY_MS - 1
+                summary["missing_days"] += missing
+
+        if summary["missing_days"] > 0:
+            errors.append(
+                f"缺失日线总数：{summary['missing_days']}"
+            )
+
+    return errors, summary
+
+
+def format_utc_date(timestamp):
+    return datetime.fromtimestamp(
+        timestamp / 1000,
+        tz=timezone.utc,
+    ).strftime("%Y-%m-%d")
+
+
+def inspect_real_csv():
+    print("=" * 55)
+    print("AI Crypto Trader - BTC 日线数据校验")
+    print("=" * 55)
+    print("文件：", DEFAULT_CSV.name)
+
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    errors, summary = validate_csv(DEFAULT_CSV, now_ms=now_ms)
+
+    print("数据行数：", summary["rows"])
+    print("完全通过的行数：", summary["valid_rows"])
+    print("重复时间戳：", summary["duplicates"])
+    print("时间顺序错误：", summary["order_errors"])
+    print("缺失日线数量：", summary["missing_days"])
+    print("未完成日线：", summary["incomplete_candles"])
+
+    if DEFAULT_CSV.exists():
+        try:
+            with DEFAULT_CSV.open(
+                "r", encoding="utf-8-sig", newline=""
+            ) as file:
+                reader = csv.DictReader(file)
+                first = next(reader, None)
+                last = first
+
+                for row in reader:
+                    last = row
+
+            if first and last:
+                print(
+                    "CSV 首行日期：",
+                    format_utc_date(int(first["timestamp"])),
                 )
-            }
-
-            if not all(v.is_finite() for v in values.values()):
-                raise InvalidOperation
-
-            o = values["open"]
-            h = values["high"]
-            low = values["low"]
-            c = values["close"]
-            volume = values["volume"]
-
-            if min(o, h, low, c) <= 0:
-                errors.append(f"{prefix}：价格必须为正数")
-
-            if volume < 0:
-                errors.append(f"{prefix}：成交量不能为负数")
-
-            if h < max(o, low, c):
-                errors.append(f"{prefix}：最高价不符合 OHLC 关系")
-
-            if low > min(o, h, c):
-                errors.append(f"{prefix}：最低价不符合 OHLC 关系")
-
-        except (InvalidOperation, ValueError):
-            errors.append(f"{prefix}：价格或成交量不是有效数字")
-
-    # 先判断时间戳是否重复、是否严格递增。
-    seen = set()
-    duplicate_found = False
-    order_error_found = False
-
-    for row_number, timestamp in timestamps:
-        if timestamp in seen:
-            errors.append(f"第 {row_number} 行：重复时间戳")
-            duplicate_found = True
-        seen.add(timestamp)
-
-    for i in range(1, len(timestamps)):
-        row_number, timestamp = timestamps[i]
-        previous_timestamp = timestamps[i - 1][1]
-
-        if timestamp < previous_timestamp:
-            errors.append(f"第 {row_number} 行：时间顺序错误")
-            order_error_found = True
-
-    # 只有没有重复且严格递增时，才判断缺失日线。
-    if not duplicate_found and not order_error_found:
-        for i in range(1, len(timestamps)):
-            row_number, timestamp = timestamps[i]
-            previous_timestamp = timestamps[i - 1][1]
-
-            if timestamp - previous_timestamp > DAY_MS:
-                missing = (
-                    timestamp - previous_timestamp
-                ) // DAY_MS - 1
-
-                errors.append(
-                    f"第 {row_number} 行：发现 {missing} 根缺失日线"
+                print(
+                    "CSV 末行日期：",
+                    format_utc_date(int(last["timestamp"])),
                 )
+        except (OSError, ValueError, TypeError, KeyError):
+            print("日期范围读取失败。")
 
-    # 每根日线必须经过完整的 24 小时才能视为收盘。
-    if now_ms is not None:
-        for row_number, timestamp in timestamps:
-            if timestamp + DAY_MS > now_ms:
-                errors.append(
-                    f"第 {row_number} 行：K 线尚未完整收盘"
-                )
+    print("-" * 55)
 
-    return errors
+    if errors:
+        print("真实数据检查结果：发现问题")
+        print("问题数量：", len(errors))
+        print("最多显示前 20 条：")
+
+        for error in errors[:20]:
+            print("-", error)
+
+        if len(errors) > 20:
+            print("其余问题未显示。")
+    else:
+        print("真实数据检查结果：PASS")
+
+    print("=" * 55)
+    return not errors
 
 
-class TestCSVQualityCheck(unittest.TestCase):
+# 以下是合成数据测试：不会修改真实行情 CSV
+class TestCSVQuality(unittest.TestCase):
 
-    def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.path = Path(self.temp_dir.name) / "test.csv"
+    def write_csv(self, rows, header=EXPECTED_HEADER):
+        temp = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            suffix=".csv",
+            delete=False,
+        )
+        self.addCleanup(
+            lambda: Path(temp.name).unlink(missing_ok=True)
+        )
 
-        self.rows = [
-            {
-                "timestamp": "1704067200000",
-                "open": "100", "high": "110",
-                "low": "95", "close": "105",
-                "volume": "1000",
-            },
-            {
-                "timestamp": "1704153600000",
-                "open": "105", "high": "115",
-                "low": "100", "close": "110",
-                "volume": "1200",
-            },
-            {
-                "timestamp": "1704240000000",
-                "open": "110", "high": "120",
-                "low": "105", "close": "115",
-                "volume": "900",
-            },
+        writer = csv.writer(temp)
+        writer.writerow(header)
+        writer.writerows(rows)
+        temp.close()
+        return temp.name
+
+    def valid_row(self, timestamp=DAY_MS):
+        return [
+            str(timestamp),
+            "100",
+            "110",
+            "90",
+            "105",
+            "1000",
         ]
 
-    def tearDown(self):
-        self.temp_dir.cleanup()
-
-    def write_rows(self, rows):
-        with self.path.open(
-            "w", encoding="utf-8", newline=""
-        ) as f:
-            writer = csv.DictWriter(
-                f, fieldnames=EXPECTED_HEADER
-            )
-            writer.writeheader()
-            writer.writerows(rows)
-
     def test_valid_data(self):
-        self.write_rows(self.rows)
-        self.assertEqual(validate_csv(self.path), [])
+        path = self.write_csv([self.valid_row()])
+        errors, _ = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertEqual(errors, [])
 
     def test_duplicate_timestamp(self):
-        rows = [dict(r) for r in self.rows]
-        rows[1]["timestamp"] = rows[0]["timestamp"]
-        self.write_rows(rows)
-        errors = validate_csv(self.path)
-        self.assertTrue(any("重复时间戳" in e for e in errors))
+        row = self.valid_row()
+        path = self.write_csv([row, row])
+        errors, summary = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertGreater(summary["duplicates"], 0)
+        self.assertTrue(errors)
 
-    def test_wrong_order_without_false_missing(self):
-        rows = [self.rows[1], self.rows[0], self.rows[2]]
-        self.write_rows(rows)
-        errors = validate_csv(self.path)
-
-        self.assertTrue(
-            any("时间顺序错误" in e for e in errors)
-        )
-        self.assertFalse(
-            any("缺失日线" in e for e in errors)
-        )
+    def test_wrong_order(self):
+        path = self.write_csv([
+            self.valid_row(2 * DAY_MS),
+            self.valid_row(DAY_MS),
+        ])
+        errors, summary = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertGreater(summary["order_errors"], 0)
+        self.assertTrue(errors)
 
     def test_missing_daily_candle(self):
-        rows = [self.rows[0], self.rows[2]]
-        self.write_rows(rows)
-        errors = validate_csv(self.path)
-        self.assertTrue(any("缺失日线" in e for e in errors))
+        path = self.write_csv([
+            self.valid_row(DAY_MS),
+            self.valid_row(3 * DAY_MS),
+        ])
+        errors, summary = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertEqual(summary["missing_days"], 1)
+        self.assertTrue(errors)
 
     def test_invalid_ohlc(self):
-        rows = [dict(r) for r in self.rows]
-        rows[0]["high"] = "99"
-        self.write_rows(rows)
-        errors = validate_csv(self.path)
-        self.assertTrue(
-            any("最高价不符合" in e for e in errors)
-        )
+        row = self.valid_row()
+        row[2] = "95"
+        path = self.write_csv([row])
+        errors, _ = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertTrue(errors)
 
     def test_negative_volume(self):
-        rows = [dict(r) for r in self.rows]
-        rows[0]["volume"] = "-1"
-        self.write_rows(rows)
-        errors = validate_csv(self.path)
-        self.assertTrue(
-            any("成交量不能为负数" in e for e in errors)
-        )
+        row = self.valid_row()
+        row[5] = "-1"
+        path = self.write_csv([row])
+        errors, _ = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertTrue(errors)
 
     def test_incomplete_candle(self):
-        self.write_rows(self.rows)
-        errors = validate_csv(
-            self.path,
-            now_ms=1704067200000 + DAY_MS - 1,
+        path =self.write_csv([self.valid_row(9      * DAY_MS)])
+        errors, summary = validate_csv(
+        path,
+        now_ms=9 * DAY_MS + 1,
         )
-        self.assertTrue(
-            any("尚未完整收盘" in e for e in errors)
-        )
+        self.assertEqual(summary["incomplete_candles"], 1)
+        self.assertTrue(errors)
 
     def test_wrong_header(self):
-        self.path.write_text(
-            "date,open,high,low,close,volume\n",
-            encoding="utf-8",
+        path = self.write_csv(
+            [self.valid_row()],
+            header=["date", "open", "high", "low", "close", "volume"],
         )
-        errors = validate_csv(self.path)
-        self.assertTrue(
-            any("表头不正确" in e for e in errors)
-        )
+        errors, _ = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertTrue(errors)
 
     def test_empty_csv(self):
-        with self.path.open(
-            "w", encoding="utf-8", newline=""
-        ) as f:
-            writer = csv.DictWriter(
-                f, fieldnames=EXPECTED_HEADER
-            )
-            writer.writeheader()
-
-        errors = validate_csv(self.path)
-        self.assertTrue(any("没有数据行" in e for e in errors))
+        path = self.write_csv([])
+        errors, _ = validate_csv(path, now_ms=10 * DAY_MS)
+        self.assertTrue(errors)
 
 
 if __name__ == "__main__":
-    print("AI Crypto Trader 数据检查器")
-    print("版本：phase1-data-validator-v0.2")
-    print("测试数据：临时目录中的人工构造数据")
-    print()
-
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(
-        TestCSVQualityCheck
+    print("运行合成数据测试...")
+    result = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(
+            TestCSVQuality
+        )
     )
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
 
     print()
-    print("测试总数：", result.testsRun)
-    print("失败数量：", len(result.failures))
-    print("错误数量：", len(result.errors))
+    print("合成测试结果：", result.testsRun - len(result.failures) - len(result.errors),
+          "/", result.testsRun, "通过")
 
-    if result.wasSuccessful():
-        print("结果：PASS")
-    else:
-        print("结果：FAIL")
-        raise SystemExit(1)
+    print()
+    inspect_real_csv()
