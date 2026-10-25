@@ -202,3 +202,12 @@ AI Crypto Trader — Work Log
 * 写明 2026-10-24 的 205 项通过只覆盖当时的 run_tests.py，不包含未接入该入口的 2c 测试。phase2b-v0.1 不再当作当前版本号，本次也不新编版本号。
 * PHASE2_DESIGN.md 与两份 HANDOFF 只在文首注明：它们是当时的设计或交接，后续以代码、PROJECT_STATUS.md 和 EXPERIMENTS.md 为准。正文未改。
 * 部分成交、丢响应后的恢复、mmp_canceled、地区合规仍按未验证记录。成交实验的数字留在 EXPERIMENTS.md，这里不重抄。
+
+2026-10-25（卖单样本入库之后）
+
+* 读取了 e9ccf7d 及其中的四份 evidence_2c_*.jsonl，没有改 Python。
+* 记入 D18 至 D22、EXPERIMENTS.md 的卖单样本，并改了 README 与 PROJECT_STATUS。
+* 卖单样本：0.00002 BTC，均价 80691.9，手续费 0.001613838 USDT，正好是成交名义金额的 0.1%。买单样本的手续费是 0.00000002 BTC，也是 0.1%。对账差额都是 0。
+* 非步长价格 79311.71 被交易所接受，这条来自已入库的 reverse_off_tick，不是新实验。
+* 没有把阶段 2c 记成无保留完成，也没有选定下一步是空跑外壳还是继续研究策略。
+* 提交说明中的 212 项通过没有当成 run_tests.py 的结果。当前 main 上 okx_demo.py、check_okx_demo.py 的英文引号会导致导入失败，这次没有改代码。
