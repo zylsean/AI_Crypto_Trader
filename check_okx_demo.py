@@ -24,7 +24,7 @@ CANDIDATE_BASE_URLS = [
     "https://us.okx.com",        # 美国、澳大利亚
     "https://eea.okx.com",       # 欧盟
 ]
-BASE_URL = "https://openapi.okx.com"   # 2b 验证通过的基址（D16）
+BASE_URL = None
 
 # 凭证文件必须放在项目目录之外、也不要放在 iCloud 同步目录内。
 # 内容是 JSON：{"api_key": "...", "secret": "...", "passphrase": "..."}
@@ -44,8 +44,7 @@ def run_diagnosis(candidates, credentials, transport=None, clock=None, out=print
     输出里的 code/msg 来自 OKX，线索只是排查方向，不是结论。
     返回 {"ok": bool, "working_base_url": str|None, "problems": [...]}。
     """
-    result = {"ok": False, "working_base_url": None, "problems": [],
-              "key_recognized_at": []}
+    result = {"ok": False, "working_base_url": None, "problems": []}
     public_errors = []
     for base in candidates:
         out(f"--- 尝试 {base}")
@@ -70,8 +69,6 @@ def run_diagnosis(candidates, credentials, transport=None, clock=None, out=print
             out(f"私有接口失败：HTTP {exc.http_status} code={exc.code} msg={exc.msg}")
             if exc.code in HINTS:
                 out(f"线索（不是结论）：{HINTS[exc.code]}")
-            if exc.code == "50101":
-                result["key_recognized_at"].append(base)
             continue
         except ExchangeError as exc:
             out(f"私有接口失败：{exc}")
@@ -114,11 +111,6 @@ def run_diagnosis(candidates, credentials, transport=None, clock=None, out=print
         out("本项目不提供绕过访问限制的功能。请把上面的输出（不含密钥）发给 OKX 客服，")
         out("询问你当前的网络环境能否访问 OKX API。不要发 Key、Secret、Passphrase。")
         return result
-    if result["key_recognized_at"]:
-        out("推断（不是结论）：50101 说明这些基址的服务器认得这个 Key（否则会是 50119），")
-        out("但 Key 与环境不匹配：" + "、".join(result["key_recognized_at"]))
-        out("最常见原因：这是实盘 Key，不是在"模拟交易"里创建的模拟 Key。")
-        out("请在 OKX 确认 Key 的创建位置；实盘 Key 不要用于本项目。")
     out("所有候选基址都失败了。请对照上面每个基址的 code/msg 和线索排查；")
     out("把输出（已脱敏，不含密钥）发给 OKX 客服或我，不要发 Key、Secret、Passphrase。")
     return result
