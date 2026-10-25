@@ -15,8 +15,9 @@ AI Crypto Trader - 阶段 2c 第 1 步：OrderManager 接真实模拟盘（不�
 关于"历史订单登记"：
 OrderManager 会把交易所里它不认识的订单当成外来订单并停机。
 之前 run_2c_demo.py 留下的测试单还在最近 7 天的历史里，所以这里会先读取
-evidence_2c_*.jsonl 里记录过的 clOrdId，只把"已撤销且零成交"的订单登记为历史订单；
-有成交或仍在挂单的，一律停下，不当作无影响的历史。
+evidence_2c_*.jsonl 里记录过的 clOrdId，把已结束（已撤销或已成交）的订单登记为历史订单；
+仍在挂单或看不懂状态的，一律停下，不当作无影响的历史。
+已成交的历史订单按"已计入基线"登记（见 seed_known_orders）。
 """
 
 import getpass
@@ -36,7 +37,8 @@ from exchange_base import ExchangeError
 from okx_demo_exchange import OKXDemoExchange
 from order_cleanup import cleanup_orders, describe_error
 from order_manager import (
-    CANCELED, ID_PATTERN, INTENT, LIVE, NON_TERMINAL, OrderManager, TradingHalted,
+    CANCELED, FILLED, ID_PATTERN, INTENT, LIVE, NON_TERMINAL, OrderManager,
+    TradingHalted,
 )
 from order_safety import normalize_limit_buy
 from order_store import OrderStore
@@ -71,9 +73,15 @@ def collect_known_cids(directory):
 
 def seed_known_orders(store, exchange, cids, base_balance, now_ms):
     """
-    把已知的、已撤销且零成交的历史订单登记进本地记录（并写入基线）。
+    把已知的、已经结束的历史订单（已撤销或已成交）登记进本地记录，并写入基线。
     返回 (登记的 clOrdId 列表, 问题列表)。有任何问题就什么都不写。
+
+    记账方式：基线取的是"此刻的余额"，历史订单的成交和手续费早已反映在里面，
+    所以登记时 filled_size 记 0、fee 记 0，避免重复计账；真实的成交量和手续费
+    另存在 historic_* 字段里留档。
+    仍在挂单、部分成交未结束、或看不懂的状态：一律拒绝，不当作无影响的历史。
     """
+    local_state = {"canceled": CANCELED, "filled": FILLED}
     records = []
     problems = []
     for cid in cids:
@@ -84,18 +92,22 @@ def seed_known_orders(store, exchange, cids, base_balance, now_ms):
             continue
         if order is None:
             continue                      # 交易所里没有（比如当时就被拒了），无需登记
-        if order["state"] == "canceled" and order["filled_size"] == 0:
-            records.append({
-                "type": "order", "cid": cid, "state": CANCELED, "side": order["side"],
-                "size": order["size"], "order_type": "limit", "price": None,
-                "filled_size": 0.0, "fee": 0.0, "fee_ccy": "",
-                "note": "seeded_from_previous_2c_evidence", "updated_ms": now_ms,
-            })
-        else:
+        state = local_state.get(order["state"])
+        if state is None:
             problems.append(
-                f"历史订单 {cid} 状态为 {order['state']}、累计成交 {order['filled_size']}，"
+                f"历史订单 {cid} 状态为 {order['state']}，还没结束或无法识别，"
                 "不能当作无影响的历史订单，请先到模拟盘页面处理"
             )
+            continue
+        records.append({
+            "type": "order", "cid": cid, "state": state, "side": order["side"],
+            "size": order["size"], "order_type": "limit", "price": None,
+            "filled_size": 0.0, "fee": 0.0, "fee_ccy": "",
+            "historic_filled_size": order["filled_size"],
+            "historic_fee": order["fee"], "historic_fee_ccy": order["fee_ccy"],
+            "note": "seeded_from_previous_2c_evidence; fills already in baseline",
+            "updated_ms": now_ms,
+        })
     if problems:
         return [], problems
     if records:
@@ -258,7 +270,7 @@ def _cleanup(exchange, store_path, evidence, say, seeded_cids, sleep):
     except Exception as exc:                   # 记录文件读不了：不能假装清理过
         evidence.add("cleanup_exception", cid=None, error_type=type(exc).__name__)
         say("警告：无法读取本次订单记录，不知道有哪些订单需要清理。"
-            "请到 OKX 模拟交易的“当前委托”里检查并手动撤销。")
+            "请到 OKX 模拟交易的"当前委托"里检查并手动撤销。")
         return {"ok": False, "verified": [], "filled": [],
                 "unverified": [{"cid": None, "reason": "无法读取本次订单记录"}]}
 
@@ -333,4 +345,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n已中断。")
         sys.exit(1)
-

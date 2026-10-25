@@ -60,6 +60,16 @@ class FakeOKX:
         self.raise_once = {}       # (方法, 路径) -> 异常
         self.execute_then_raise = False
         self.time_offset_ms = 0    # 假服务器时间比本机快多少毫秒
+        self.hide_orders = False   # True：订单详情查询一律返回"订单不存在"，但订单真实存在
+        self.raise_always = {}     # (方法, 路径) -> 异常，每次请求都抛
+        self.cancel_mode = None    # None=正常撤单；"ignore"=返回受理但订单不变；"fill"=返回受理但订单变成已成交
+        self.cancel_rejects = 0    # 接下来这么多次撤单请求返回业务错误（订单不变）
+        self.ask = "100001.0"      # 行情卖一价
+        self.bid = "100000.0"      # 行情买一价
+        self.fill_on_place = False         # True：新下的限价买单立刻按卖一价成交
+        self.skip_fee_in_balance = False   # True：成交了但余额里没扣手续费（用来测对账能否发现）
+        self.skip_usdt_in_balance = False  # True：成交了但 USDT 余额没变化
+        self.min_sz = "0.00001"            # 交易对最小下单量
         self._n = 0
 
     def posts(self, path="/api/v5/trade/order"):
@@ -74,6 +84,10 @@ class FakeOKX:
         }
         self.requests.append(record)
         key = (method, parsed.path)
+
+        always = self.raise_always.get(key)
+        if always is not None:
+            raise always
 
         exc = self.raise_once.get(key)
         if exc is not None:
@@ -95,16 +109,36 @@ class FakeOKX:
             "px": body["px"], "state": "live", "accFillSz": "0", "fillSz": "0",
             "avgPx": "", "fee": "", "feeCcy": "",
         }
-        return self.orders[body["clOrdId"]]
+        order = self.orders[body["clOrdId"]]
+        if self.fill_on_place:
+            from decimal import Decimal
+            size, price = Decimal(body["sz"]), Decimal(self.ask)
+            fee = size * Decimal("0.001")
+            order.update(state="filled", accFillSz=body["sz"], fillSz=body["sz"],
+                         avgPx=format(price, "f"), fee="-" + format(fee, "f"),
+                         feeCcy="BTC")
+            self._move_balance("BTC", size - (Decimal(0) if self.skip_fee_in_balance else fee))
+            if not self.skip_usdt_in_balance:
+                self._move_balance("USDT", -(size * price))
+        return order
+
+    def _move_balance(self, ccy, delta):
+        from decimal import Decimal
+        for entry in self.balance_details:
+            if entry["ccy"] == ccy:
+                entry["cashBal"] = format(Decimal(entry["cashBal"]) + delta, "f")
+                return
+        self.balance_details.append({"ccy": ccy, "cashBal": format(delta, "f")})
 
     def _handle(self, method, path, record):
         if path == "/api/v5/public/time":
             return ok([{"ts": str(int(NOW * 1000) + self.time_offset_ms)}])
         if path == "/api/v5/public/instruments":
-            return ok([{"instId": "BTC-USDT", "minSz": "0.00001",
+            return ok([{"instId": "BTC-USDT", "minSz": self.min_sz,
                         "lotSz": "0.00000001", "tickSz": "0.1"}])
         if path == "/api/v5/market/ticker":
-            return ok([{"instId": "BTC-USDT", "last": "100000.5"}])
+            return ok([{"instId": "BTC-USDT", "last": "100000.5",
+                        "askPx": self.ask, "bidPx": self.bid}])
         if path == "/api/v5/account/balance":
             return ok([{"details": self.balance_details}])
         if method == "POST" and path == "/api/v5/trade/order":
@@ -119,6 +153,17 @@ class FakeOKX:
         if method == "POST" and path == "/api/v5/trade/cancel-order":
             body = json.loads(record["body"])
             order = self.orders.get(body["clOrdId"])
+            if self.cancel_rejects > 0:
+                self.cancel_rejects -= 1
+                return top_error("1", "All operations failed", [
+                    {"clOrdId": body["clOrdId"], "ordId": "", "sCode": "99003",
+                     "sMsg": "cancel rejected (test)"}])
+            if order and self.cancel_mode == "ignore":
+                return ack(body["clOrdId"], order["ordId"])
+            if order and self.cancel_mode == "fill":
+                order.update(state="filled", accFillSz=order["sz"], fillSz=order["sz"],
+                             avgPx=order["px"], fee="-0.00000001", feeCcy="BTC")
+                return ack(body["clOrdId"], order["ordId"])
             if order and order["state"] in ("live", "partially_filled"):
                 order["state"] = "canceled"
                 return ack(body["clOrdId"], order["ordId"])
@@ -128,7 +173,7 @@ class FakeOKX:
         if method == "GET" and path == "/api/v5/trade/order":
             cid = record["query"]["clOrdId"][0]
             order = self.orders.get(cid)
-            if order is None:
+            if order is None or self.hide_orders:
                 return 200, json.dumps(
                     {"code": "51603", "msg": "Order does not exist", "data": []})
             return ok([dict(order)])
@@ -552,6 +597,23 @@ class TestRulesAndPrice(unittest.TestCase):
     def test_last_price(self):
         exchange, _ = make_exchange()
         self.assertEqual(exchange.get_last_price(), "100000.5")
+
+    def test_best_prices(self):
+        exchange, _ = make_exchange()
+        self.assertEqual(exchange.get_best_prices(),
+                         {"last": "100000.5", "ask": "100001.0", "bid": "100000.0"})
+
+    def test_best_prices_missing_or_bad_fields_are_errors(self):
+        base = {"instId": "BTC-USDT", "last": "1", "askPx": "2", "bidPx": "1"}
+        for field, value in (("last", ""), ("askPx", ""), ("bidPx", None),
+                             ("askPx", "abc"), ("askPx", "0"), ("bidPx", "-1")):
+            with self.subTest(field=field, value=value):
+                exchange, server = make_exchange()
+                item = dict(base)
+                item[field] = value
+                server.overrides[("GET", "/api/v5/market/ticker")] = [ok([item])]
+                with self.assertRaises(ExchangeTimeout):
+                    exchange.get_best_prices()
 
 
 class TestWithOrderManager(unittest.TestCase):

@@ -181,6 +181,28 @@ class OKXDemoExchange(Exchange):
             raise ExchangeTimeout("行情 last 不是有效数字") from None
         return last
 
+    def get_best_prices(self):
+        """公共行情接口，返回 {"last", "ask", "bid"} 字符串。任何字段缺失或不是正数都报错。"""
+        data = self._request(
+            "GET", "/api/v5/market/ticker",
+            params={"instId": self.inst_id}, private=False,
+        )
+        if not data or not isinstance(data[0], dict):
+            raise ExchangeTimeout("行情响应结构不符合预期")
+        prices = {}
+        for name, key in (("last", "last"), ("ask", "askPx"), ("bid", "bidPx")):
+            value = data[0].get(key)
+            if not isinstance(value, str) or not value:
+                raise ExchangeTimeout(f"行情响应缺少 {key}")
+            try:
+                number = decimal_value(value, key)
+            except ValueError:
+                raise ExchangeTimeout(f"行情 {key} 不是有效数字") from None
+            if number <= 0:
+                raise ExchangeTimeout(f"行情 {key} 不是正数")
+            prices[name] = value
+        return prices
+
     # ---------- 错误分类 ----------
     def _classify_api_error(self, exc):
         data = getattr(exc, "data", None) or []

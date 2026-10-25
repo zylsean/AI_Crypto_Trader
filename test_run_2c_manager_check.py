@@ -91,17 +91,39 @@ class TestSeeding(Base):
         self.assertEqual(baseline["base"], 0.5)
         self.assertNotIn("GONE01", orders)
 
-    def test_filled_or_live_history_is_refused_and_nothing_written(self):
+    def test_filled_and_partially_filled_then_canceled_history_is_seeded_as_in_baseline(self):
         self.add_canceled("OLD001")
         self.add_canceled("OLD002", state="filled", accFillSz="0.00002",
-                          fee="-0.00000002", feeCcy="BTC")
-        self.add_canceled("OLD003", state="live")
-        self.add_canceled("OLD004", accFillSz="0.00001")     # 撤销前部分成交
+                          fee="-0.00000002", feeCcy="BTC", avgPx="99000")
+        self.add_canceled("OLD004", accFillSz="0.00001", fee="-0.00000001",
+                          feeCcy="BTC", avgPx="99000")      # 撤销前部分成交
         store = OrderStore(self.store_path)
         seeded, problems = seed_known_orders(
-            store, self.exchange, ["OLD001", "OLD002", "OLD003", "OLD004"], 0.0, 1)
+            store, self.exchange, ["OLD001", "OLD002", "OLD004"], 1.5, 1)
+        self.assertEqual((seeded, problems), (["OLD001", "OLD002", "OLD004"], []))
+        orders, baseline, _ = store.load()
+        self.assertEqual(baseline["base"], 1.5)
+        old2 = orders["OLD002"]
+        self.assertEqual(old2["state"], "FILLED")
+        self.assertEqual(old2["filled_size"], 0.0)          # 已计入基线，不重复计账
+        self.assertEqual(old2["fee"], 0.0)
+        self.assertAlmostEqual(old2["historic_filled_size"], 0.00002)
+        self.assertAlmostEqual(old2["historic_fee"], 0.00000002)
+        self.assertEqual(old2["historic_fee_ccy"], "BTC")
+        self.assertEqual(orders["OLD004"]["state"], "CANCELED")
+        self.assertAlmostEqual(orders["OLD004"]["historic_filled_size"], 0.00001)
+
+    def test_open_or_unknown_history_is_refused_and_nothing_written(self):
+        self.add_canceled("OLD003", state="live")
+        self.add_canceled("OLD005", state="partially_filled", accFillSz="0.000005",
+                          fee="-0.000000005", feeCcy="BTC", avgPx="99000")
+        self.add_canceled("OLD006", state="mmp_canceled")
+        self.add_canceled("OLD007", state="some_new_state")
+        store = OrderStore(self.store_path)
+        seeded, problems = seed_known_orders(
+            store, self.exchange, ["OLD003", "OLD005", "OLD006", "OLD007"], 0.0, 1)
         self.assertEqual(seeded, [])
-        self.assertEqual(len(problems), 3)
+        self.assertEqual(len(problems), 4)
         self.assertFalse(self.store_path.exists())
 
     def test_query_failure_is_a_problem(self):
@@ -135,9 +157,19 @@ class TestDryRun(Base):
                             for i in self.item("reconcile_1")["issues"]))
         self.assertEqual(self.server.posts(), [])
 
-    def test_unseedable_history_stops_before_reconcile(self):
+    def test_seeded_filled_history_reconciles_even_though_balance_includes_the_fill(self):
+        # 旧订单已成交：余额里已经含有它的成交和手续费，基线按此刻余额取，对账应当一致。
+        self.server.balance_details = [
+            {"ccy": "BTC", "cashBal": "1.00001998"}, {"ccy": "USDT", "cashBal": "100000"}]
         self.add_canceled("OLD002", state="filled", accFillSz="0.00002",
-                          fee="-0.00000002", feeCcy="BTC")
+                          fee="-0.00000002", feeCcy="BTC", avgPx="99000")
+        self.write_history("OLD002")
+        summary = self.run_it(send_orders=False)
+        self.assertTrue(summary["completed"], self.lines)
+        self.assertTrue(self.item("reconcile_1")["ok"])
+
+    def test_unseedable_history_stops_before_reconcile(self):
+        self.add_canceled("OLD002", state="live")
         self.write_history("OLD002")
         summary = self.run_it(send_orders=True)
         self.assertFalse(summary["completed"])
