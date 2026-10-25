@@ -1,3 +1,5 @@
+> 2026-10-25 注：这是当时的交接，不是当前现状。下文仍把阶段 2c 写成暂缓。后续以仓库代码、PROJECT_STATUS.md 和 EXPERIMENTS.md 为准。正文不改。
+
 AI Crypto Trader — ChatGPT 项目交接
 
 日期：2026-10-24 仓库：https://github.com/zylsean/AI_Crypto_Trader

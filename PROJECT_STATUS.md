@@ -1,14 +1,14 @@
 AI Crypto Trader — Project Status
 
-项目阶段：第一阶段完成；阶段 2a（纯本地）、2b（模拟盘只读）完成，2c 待定
-当前版本：phase2b-v0.1
-最后更新：2026-10-24
+项目阶段：第一阶段完成；阶段 2a（纯本地）、2b（模拟盘只读）完成。阶段 2c 已有本轮 OKX 模拟盘现货限价买单记录，整段未完成。
+当前版本：沿用仓库 main。phase2b-v0.1 不再代表现状。本次不新编版本号。
+最后更新：2026-10-25
 
 1. 项目目标
 
 从小而可靠的加密货币现货量化研究原型开始，逐步验证数据处理、资金核算、策略逻辑、回测结果和风险控制。
 
-当前进行历史研究、模拟回测、纯本地的订单管理原型（假交易所），以及 OKX 模拟盘的只读检查。不使用真实资金，不执行真实交易，不下任何订单。
+当前进行历史研究、模拟回测、本地订单管理，以及 OKX 模拟盘上的现货限价买单验证。不使用真实资金，不做实盘。模拟盘下过限价买单，记录在 EXPERIMENTS.md。那不是实盘成交，也不表示策略有效。
 
 2. 开发环境
 
@@ -17,8 +17,7 @@ AI Crypto Trader — Project Status
 * 项目目录：Documents/AI_Crypto_Trader
 * 优先使用 Python 标准库
 * 全量测试入口：run_tests.py
-* 最近一次全量测试结果：205 项通过（2026-10-24，本地实际运行结果）
-* 最近一次全量测试结果：196 项通过（以本地实际运行结果为准）
+* 2026-10-24 本地运行 run_tests.py：205 项通过。该入口没有加载 test_order_safety、test_order_cleanup、test_okx_demo_exchange、test_run_2c_demo、test_run_2c_fill_check、test_run_2c_manager_check。因此 205 不能当成 2c 测试已通过。更早的「196 项」已过时，不再并列引用。本次文档对齐没有重跑测试。
 
 3. 已完成
 
@@ -55,7 +54,7 @@ SMA50 策略与分段对比（strategy_sma.py、run_strategy_compare.py）
 * 独立风控：单笔与持仓上限、不做空、当日亏损达上限只拒绝买入；上限创建后不可修改
 * 日志脱敏与启动守卫：域名白名单、模拟标志、密钥权限不含 withdraw
 * FakeExchange 可注入超时、拒单、崩溃、部分成交；新增 65 项测试，6 项反向检查均能抓到错误
-* 已知限制：只核对基础币余额；手动充值或划转会触发停止；重复订单 ID 的行为只是假设，待 2c 实测
+* 已知限制：只核对基础币余额；手动充值或划转会触发停止。2a 当时把「重复客户端订单 ID 被拒绝」写成假交易所假设。EXPERIMENTS.md 记录了本次模拟盘对尚未结束的订单返回拒绝；订单进入终态之后再使用同一 ID，仍未验证。
 
 阶段 2b：OKX 模拟盘只读（已联网，只读）
 
@@ -65,6 +64,21 @@ SMA50 策略与分段对比（strategy_sma.py、run_strategy_compare.py）
 * 实测结果：基址 https://openapi.okx.com 验证通过；账户权限 read_only，feeType=0，acctLv=2；启动守卫通过
 * 排查记录：凭证路径曾误指向应用容器根目录（已修）；曾因 Key 是实盘 Key 返回 50101，换成模拟 Key 后通过
 * 新增 52 项测试，全部使用假网络
+
+实验方案预登记（experiment_plan.py）
+
+* 检查必填字段、日期、手续费、初始资金，并拒绝一组已知的结果字段。
+* 当前只允许登记开发期（evaluation_segment 为 dev）。
+* 测试在 test_experiment_plan.py，已接入 run_tests.py。2026-10-24 本地运行该入口为 205 项通过。
+* 通过结构校验不等于实验纪律已被证明。parameters 只检查是不是字典。
+
+阶段 2c：已有记录，整段未完成
+
+* 代码已在仓库中：okx_demo_exchange.py、order_safety.py、order_cleanup.py，以及 run_2c_demo.py、run_2c_manager_check.py、run_2c_fill_check.py。okx_demo.py 仍然没有下单方法。
+* OKXDemoExchange 只发送现货限价买单。市价单和卖单在这一层本地拒绝，请求不发出。OrderManager.place_order 仍接受显式传入的 market，不能说管理器已经禁止市价单。
+* 实测范围以 EXPERIMENTS.md 为准，这里不重抄成交数字。已有记录的是：限价买单提交、详情确认 live、撤单、本次重复 clOrdId 被拒绝、低于最小数量被拒绝、一笔订单管理器重启后对账，以及一笔最小数量成交样本。
+* 这些记录不能外推为：部分成交、丢响应后的恢复、历史成交重复计账、mmp_canceled，或实盘资格、地区合规。
+* 2b 记录的 perm=read_only 属于当时的只读模拟 Key。后来能够下单，说明使用了有交易权限的模拟盘 Key。本次没有新的 account/config 原文。
 
 4. 口径约定
 
@@ -135,18 +149,12 @@ E2 判定：开发期未通过 D11。
 
 6. 尚未完成
 
-* 2c 开工前（硬性条件）：确认账户可以在当前所在地合规访问 OKX，以 OKX 客服答复为准
-* 2c 开工前：读官方文档核实下单响应结构、订单状态枚举、各接口限频数字、Get fee rates 返回结构
-* 2c 实测事项：重复 clOrdId 行为、expTime 在模拟盘是否生效
-* 核实 acctLv=2 的含义；本项目只做现货，客户端没有合约或杠杆接口
-* 策略研究：E1、E2 均未通过开发期门槛；若登记后续实验，必须保留既定 D11 标准
-* 在下一次阶段性审查前，核对 GitHub 上实验脚本、测试入口、实验记录和项目状态是否一致
-* 实验方案预登记校验器（experiment_plan.py）
-
-* 检查必填字段、实验日期、手续费、初始资金和开发期限制。
-* 拒绝预登记方案中混入实验结果字段。
-* 测试文件：test_experiment_plan.py，已接入 run_tests.py。
-* 全量测试：205 项通过。
+* 地区合规：账户能否在当前所在地合规访问 OKX，仍以 OKX 客服答复为准。模拟盘下单成功不代替这项。
+* 官方文档尚未逐项写死进代码的部分：各接口限频数字、Get fee rates 的返回结构、expTime 在模拟盘是否生效、acctLv=2 的官方含义，以及订单进入终态后再次使用同一 clOrdId 的行为。本次未结订单上的重复 clOrdId 已有拒绝记录，见 EXPERIMENTS.md，不能外推到终态之后。
+* 订单恢复仍未验证：部分成交、请求已被交易所接受但客户端没收到响应、重启或重试时的重复下单防护、历史成交计入基线后会不会被算两次。
+* mmp_canceled：order_safety.py 和 order_cleanup.py 认这个状态，order_manager.py 的状态表不认。不能说 OrderManager 已支持它。
+* run_tests.py 仍未加载 test_order_safety、test_order_cleanup、test_okx_demo_exchange、test_run_2c_demo、test_run_2c_fill_check、test_run_2c_manager_check。本次没有重跑测试。
+* 策略研究：E1、E2 均未通过开发期 D11。验证期和最终测试期都还没看。不得改窗口或放宽门槛。
 
 7. 暂不做
 
@@ -158,10 +166,11 @@ E2 判定：开发期未通过 D11。
 
 8. 安全边界
 
-* 不进行真实交易；不使用杠杆或做空
+* 不进行实盘交易，不使用真实资金；不使用杠杆或做空
+* 模拟盘可以做现货限价买单验证。OKXDemoExchange 不发送市价单和卖单
 * 不提交 API 密钥、密码或其他秘密配置；不提交本地行情 CSV
-* 历史回测结果不视为未来收益保证
-* 新功能必须通过测试后才能纳入主版本
+* 历史回测和单次模拟盘样本都不视为未来收益保证
+* 新功能必须通过测试后才能纳入主版本。2c 相关测试还没有全部进入 run_tests.py
 * 任何联网交易功能都必须经过独立审查、模拟验证和明确的阶段准入
 
 9. 多 AI 协作

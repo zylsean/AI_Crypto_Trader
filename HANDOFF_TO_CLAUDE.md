@@ -1,3 +1,5 @@
+> 2026-10-25 注：这是当时的交接，不是当前现状。下文「不要直接发送订单」已被后续模拟盘记录超过。后续以仓库代码、PROJECT_STATUS.md 和 EXPERIMENTS.md 为准。正文不改。
+
 AI Crypto Trader — 阶段 2c 交接报告（GPT → Claude）
 
 日期： 2026-10-25
