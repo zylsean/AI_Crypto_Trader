@@ -27,12 +27,12 @@ if str(_SCRIPT_DIR) not in sys.path:
 
 from exchange_base import ExchangeError, ExchangeRejected, ExchangeTimeout
 from okx_demo_exchange import OKXDemoExchange
+from order_cleanup import cleanup_orders, describe_error
 from order_safety import OrderIdRegistry, decimal_value, normalize_limit_buy, round_to_step
 from secrets_util import redact_text
 
 DEFAULT_BASE = "https://openapi.okx.com"
 ALLOWED_BASES = ["https://openapi.okx.com", "https://www.okx.com"]
-OPEN_STATES = ("live", "partially_filled")
 
 
 class Evidence:
@@ -78,18 +78,6 @@ def prepare_credentials(api_key, secret, passphrase):
     return cleaned, notes
 
 
-def describe_error(exc):
-    """把异常整理成可记录的字段，不解释含义。"""
-    info = {"error_type": type(exc).__name__}
-    for name in ("s_code", "s_msg", "code", "msg", "http_status"):
-        value = getattr(exc, name, None)
-        if value not in (None, ""):
-            info[name] = value
-    if len(info) == 1:
-        info["message"] = str(exc)[:200]
-    return info
-
-
 def run_checks(exchange, evidence, send_orders=False, include_reverse=False,
                sleep=time.sleep, say=print, id_registry=None):
     """
@@ -120,27 +108,6 @@ def run_checks(exchange, evidence, send_orders=False, include_reverse=False,
                 return order, None
             sleep(1.0)
         return order, error
-
-    def cleanup():
-        """查询并撤销本次运行产生的所有挂单。"""
-        for cid in placed:
-            order, error = fetch(cid)
-            if error:
-                evidence.add("cleanup_query_failed", cid=cid, **error)
-                continue
-            if order is None:
-                evidence.add("cleanup_not_found", cid=cid)
-                continue
-            if order["state"] in OPEN_STATES:
-                try:
-                    exchange.cancel_order(cid)
-                    evidence.add("cleanup_cancel_sent", cid=cid)
-                except ExchangeError as exc:
-                    evidence.add("cleanup_cancel_failed", cid=cid, **describe_error(exc))
-                final, _ = wait_for_state(cid, ("canceled", "filled"))
-                evidence.add("cleanup_final_state", cid=cid,
-                             state=(final or {}).get("state"),
-                             accFillSz=(final or {}).get("filled_size"))
 
     try:
         # 1. 交易对规则
@@ -201,6 +168,7 @@ def run_checks(exchange, evidence, send_orders=False, include_reverse=False,
         try:
             ack = exchange.place_order(cid, "buy", float(sz), "limit", float(px))
         except ExchangeRejected as exc:
+            placed.remove(cid)          # 交易所明确拒绝：订单不存在，不需要清理
             evidence.add("place", ok=False, outcome="rejected", cid=cid, **describe_error(exc))
             return stop("下单被拒绝：已记录原始 sCode/sMsg，不绕过")
         except ExchangeTimeout as exc:
@@ -258,6 +226,7 @@ def run_checks(exchange, evidence, send_orders=False, include_reverse=False,
                     evidence.add(f"reverse_{name}", outcome="accepted_unexpectedly",
                                  cid=rid, px=price_text, sz=size_text)
                 except ExchangeRejected as exc:
+                    placed.remove(rid)  # 交易所明确拒绝：订单不存在，不需要清理
                     evidence.add(f"reverse_{name}", outcome="rejected", cid=rid,
                                  px=price_text, sz=size_text, **describe_error(exc))
                 except ExchangeTimeout as exc:
@@ -270,17 +239,24 @@ def run_checks(exchange, evidence, send_orders=False, include_reverse=False,
         return summary
     finally:
         if placed:
-            say("清理：查询并撤销本次运行产生的挂单")
-            cleanup()
+            say("清理：查询并撤销本次运行产生的挂单，并核实最终状态")
+            result = cleanup_orders(exchange, placed, evidence, say=say, sleep=sleep)
+            summary["cleanup_ok"] = result["ok"]
+            if not result["ok"]:
+                summary["completed"] = False
+                if not summary["stopped"]:
+                    summary["stopped"] = "清理未能核实或发现成交，请按提示手动检查"
             try:
                 leftovers = [o for o in exchange.get_open_orders()
                              if o["client_order_id"] in placed]
                 evidence.add("final_check", our_open_orders=len(leftovers))
                 if leftovers:
                     say(f"警告：仍有 {len(leftovers)} 笔本次运行的挂单，请到模拟盘页面手动撤销")
+                    summary["completed"] = False
             except ExchangeError as exc:
                 evidence.add("final_check", ok=False, **describe_error(exc))
                 say("警告：无法确认是否还有挂单，请到模拟盘页面检查")
+                summary["completed"] = False
 
 
 def main():

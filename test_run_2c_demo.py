@@ -118,6 +118,8 @@ class TestSendFlow(Base):
         self.assertEqual(self.item("reverse_below_minsz")["s_code"], "77001")
         self.assertEqual(self.item("reverse_off_tick")["s_code"], "77001")
         self.assertEqual(self.live_orders(), [])
+        # 被明确拒绝的订单不存在于交易所，不应触发清理告警。
+        self.assertNotIn("cleanup_unverified", self.steps())
 
     def test_unknown_place_outcome_never_resends_and_cleans_up(self):
         self.server.execute_then_raise = True
@@ -159,6 +161,36 @@ class TestSendFlow(Base):
         summary = self.run_it(send_orders=True)
         self.assertFalse(summary["completed"])
         self.assertIn("live", summary["stopped"])
+
+
+class TestCleanupHonesty(Base):
+    def test_cancel_that_does_not_take_effect_is_not_reported_complete(self):
+        self.server.cancel_mode = "ignore"
+        summary = self.run_it(send_orders=True)
+        self.assertFalse(summary["completed"])
+        self.assertFalse(summary["cleanup_ok"])
+        self.assertEqual(len(self.live_orders()), 1)
+        self.assertEqual(self.item("final_check")["our_open_orders"], 1)
+
+    def test_failed_cleanup_alone_makes_the_run_incomplete(self):
+        self.server.cancel_mode = "ignore"
+        self.exchange.get_open_orders = lambda: []      # 让"挂单列表复查"看不出问题
+        summary = self.run_it(send_orders=True)
+        self.assertFalse(summary["cleanup_ok"])
+        self.assertFalse(summary["completed"])
+        self.assertIn("清理", summary["stopped"])
+
+    def test_rejected_main_order_triggers_no_cleanup_noise(self):
+        self.server.overrides[("POST", "/api/v5/trade/order")] = [
+            top_error("1", "failed", [{"sCode": "66003", "sMsg": "example"}])]
+        summary = self.run_it(send_orders=True)
+        self.assertFalse(summary["completed"])
+        self.assertNotIn("cleanup_summary", self.steps())
+
+    def test_clean_run_reports_cleanup_ok(self):
+        summary = self.run_it(send_orders=True, include_reverse=True)
+        self.assertTrue(summary["completed"])
+        self.assertTrue(summary["cleanup_ok"])
 
 
 class TestEvidenceFile(Base):
