@@ -5,16 +5,17 @@ AI Crypto Trader - 阶段 2c 第 2 步：成交样本。
   1. 手续费的方向和币种（fee、feeCcy）；
   2. 累计成交量 accFillSz 的真实样子；
   3. BTC 余额变化 == 成交量 - 手续费（OrderManager 对账会自动核对）；
-  4. USDT 变化 == 成交量 x 成交均价。
+  4. USDT 变化 == 成交量 x 成交均价（买为负、卖为正，USDT 手续费另算）。
 
-做法：通过 OrderManager 下一笔价格略高于卖一价的最小限价买单（会立刻成交，
-成交价按对手盘，不会按你的限价），然后模拟重启、对账、再对账。
+做法：通过 OrderManager 下一笔越过对手盘的最小限价单（买单价格略高于卖一价，
+卖单价格略低于买一价，会立刻成交，成交价按对手盘，不会按你的限价），
+然后模拟重启、对账、再对账。run_fill_check(side="sell") 用于卖单样本。
 
 安全设计：
 - 只用模拟盘 Key；只在输入 D15-OK 之后继续。
 - 默认只做检查（预检、登记历史、对账、算出订单），必须输入 FILL 才会下单。
 - 单笔名义金额上限 5 USDT，超过就拒绝；数量取最小下单量，约 1~2 USDT。
-- 只买不卖：成交后模拟盘里会多出这一点 BTC，这是预期的结果。
+- 本脚本只买；卖出样本见 run_2c_sell_check.py。买入后模拟盘里会多出这一点 BTC。
 - 如果没有立刻成交，订单会被撤销并如实报告，不会反复下单。
 - 无论中途出什么问题，结束时都会查询并撤销本次运行产生的挂单，并核实最终状态。
 - 证据文件只记录差额（对账差、USDT 差），不记录余额绝对数字，也没有凭证。
@@ -46,12 +47,17 @@ from run_2c_manager_check import (
 )
 
 MAX_NOTIONAL_USDT = Decimal("5")
-ASK_MARGIN = Decimal("1.001")          # 限价 = 卖一价 x 1.001，保证能立刻成交
+ASK_MARGIN = Decimal("1.001")          # 买：限价 = 卖一价 x 1.001，保证能立刻成交
+BID_MARGIN = Decimal("0.999")          # 卖：限价 = 买一价 x 0.999，保证能立刻成交
 USDT_TOLERANCE = 1e-6
 
 
 def run_fill_check(exchange, store_path, evidence, evidence_dir, secrets,
-                   fill_orders=False, sleep=time.sleep, say=print):
+                   fill_orders=False, sleep=time.sleep, say=print, side="buy"):
+    """side="buy" 做买单成交样本；side="sell" 做卖单成交样本（卖出手续费应从 USDT 里扣）。"""
+    if side not in ("buy", "sell"):
+        raise ValueError("side 必须是 buy 或 sell。")
+    label = "买" if side == "buy" else "卖"
     summary = {"completed": False, "stopped": None}
 
     def stop(reason):
@@ -83,26 +89,33 @@ def run_fill_check(exchange, store_path, evidence, evidence_dir, secrets,
         btc_before = float(balance.get("BTC", 0.0))
 
         # 2. 计算订单
-        say("2/6 计算一笔会立刻成交的最小限价买单")
+        say(f"2/6 计算一笔会立刻成交的最小限价{label}单")
+        if side == "buy":
+            target, ref_text = Decimal(prices["ask"]) * ASK_MARGIN, prices["ask"]
+        else:
+            target, ref_text = Decimal(prices["bid"]) * BID_MARGIN, prices["bid"]
         try:
+            # 价格和数量都向下取整到步长；对买单和卖单数学上相同。
             plan = normalize_limit_buy(
-                Decimal(prices["ask"]) * ASK_MARGIN, rules["minSz"],
-                rules["tickSz"], rules["lotSz"], rules["minSz"])
+                target, rules["minSz"], rules["tickSz"], rules["lotSz"], rules["minSz"])
         except (ValueError, ArithmeticError) as exc:
             evidence.add("plan", ok=False, message=str(exc)[:200])
             return stop("无法计算订单")
         px, sz = plan["px"], plan["sz"]
         notional = Decimal(px) * Decimal(sz)
-        evidence.add("plan", ok=notional <= MAX_NOTIONAL_USDT, ask=prices["ask"],
-                     px=px, sz=sz, notional=format(notional, "f"), fill_orders=fill_orders)
+        evidence.add("plan", ok=notional <= MAX_NOTIONAL_USDT, side=side,
+                     ask=prices["ask"], bid=prices["bid"], px=px, sz=sz,
+                     notional=format(notional, "f"), fill_orders=fill_orders)
         say(f"   计划：限价 {px}，数量 {sz}，名义金额约 {notional:.4f} USDT")
         if notional > MAX_NOTIONAL_USDT:
             return stop(f"名义金额超过 {MAX_NOTIONAL_USDT} USDT 上限，拒绝下单")
 
-        size_f, ask_f, px_f = float(sz), float(prices["ask"]), float(px)
+        size_f, ref_f, px_f = float(sz), float(ref_text), float(px)
+        if side == "sell" and btc_before < size_f:
+            return stop("BTC 持仓不足以卖出这笔最小数量")
         limits = RiskLimits(
             max_order_notional=float(notional) * 2,
-            max_position_notional=(btc_before + size_f * 10) * ask_f,
+            max_position_notional=(btc_before + size_f * 10) * ref_f,
             max_daily_loss=1.0,
         )
 
@@ -132,10 +145,10 @@ def run_fill_check(exchange, store_path, evidence, evidence_dir, secrets,
             return summary
 
         # 4. 下单（应当立刻成交）
-        say("4/6 通过 OrderManager 下单（价格略高于卖一价，应立刻成交）")
+        say(f"4/6 通过 OrderManager 下{label}单（价格越过对手盘，应立刻成交）")
         try:
             record = manager.place_order(
-                "buy", size_f, ref_price=ask_f, order_type="limit", price=px_f)
+                side, size_f, ref_price=ref_f, order_type="limit", price=px_f)
         except (TradingHalted, RiskRejected, ValueError) as exc:
             evidence.add("place", ok=False, **describe_error(exc))
             return stop("下单前被拦截：" + type(exc).__name__)
@@ -171,11 +184,12 @@ def run_fill_check(exchange, store_path, evidence, evidence_dir, secrets,
                 say("   " + issue)
             return stop("成交后对账未通过：手续费或成交量的记账与余额不符")
 
-        usdt_spent = usdt_before - after.get("USDT", 0.0)
-        expected_spent = filled * avg_price + (fee if fee_ccy == "USDT" else 0.0)
-        usdt_diff = usdt_spent - expected_spent
+        # USDT 变化：买为负（花出去），卖为正（收进来）；手续费若以 USDT 计，两种情况都是减项。
+        direction = -1.0 if side == "buy" else 1.0
+        expected_delta = direction * filled * avg_price - (fee if fee_ccy == "USDT" else 0.0)
+        usdt_diff = (after.get("USDT", 0.0) - usdt_before) - expected_delta
         usdt_ok = abs(usdt_diff) <= USDT_TOLERANCE
-        evidence.add("usdt_check", ok=usdt_ok, spent_minus_expected=round(usdt_diff, 10))
+        evidence.add("usdt_check", ok=usdt_ok, delta_minus_expected=round(usdt_diff, 10))
         if not usdt_ok:
             return stop("USDT 变化与成交不符：对手续费或成交均价的理解可能有误，请检查证据")
 

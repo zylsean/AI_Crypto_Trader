@@ -1,9 +1,10 @@
 """
 AI Crypto Trader - 阶段 2c：OKX 模拟盘交易客户端（实现 Exchange 接口）。
 
-范围（2c 首轮，故意收紧）：
-- 只支持现货限价买单（side=buy, ordType=limit, tdMode=cash）。
-- 市价单、卖单、不合规的价格或数量一律在本地拒绝（LocalOrderRejected），不发请求。
+范围（2c，故意收紧）：
+- 只支持现货限价单（ordType=limit, tdMode=cash），买和卖都可以。
+- 市价单、不合规的价格或数量一律在本地拒绝（LocalOrderRejected），不发请求。
+- 价格和数量必须已经是 tickSz、lotSz 的整数倍，客户端只校验、不替调用方取整。
 - 复用 2b 的 OKXDemoClient：基址白名单、https、每个请求都带 x-simulated-trading: 1。
 
 判定原则：
@@ -252,12 +253,12 @@ class OKXDemoExchange(Exchange):
     def place_order(self, client_order_id, side, size, order_type="market",
                     price=None, validate_locally=True):
         """
-        限价买单。成功只表示"已受理"，返回 {"order_id", "client_order_id"}。
+        限价单（买或卖）。成功只表示"已受理"，返回 {"order_id", "client_order_id"}。
         validate_locally=False 只给"故意发非法订单看交易所怎么拒绝"的实验使用，
         OrderManager 不会传这个参数。
         """
-        if side != "buy" or order_type != "limit":
-            raise LocalOrderRejected("2c 首轮只支持现货限价买单。")
+        if side not in ("buy", "sell") or order_type != "limit":
+            raise LocalOrderRejected("2c 只支持现货限价单（买或卖）。")
         if price is None:
             raise LocalOrderRejected("限价单必须提供 price。")
         if not isinstance(client_order_id, str) or not ID_PATTERN.match(client_order_id):
@@ -283,7 +284,7 @@ class OKXDemoExchange(Exchange):
             "instId": self.inst_id,
             "tdMode": "cash",
             "clOrdId": client_order_id,
-            "side": "buy",
+            "side": side,
             "ordType": "limit",
             "px": px_text,
             "sz": sz_text,

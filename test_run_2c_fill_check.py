@@ -150,6 +150,105 @@ class TestFillFlow(Base):
         self.assertTrue(summary["cleanup_ok"])
 
 
+class TestSellFlow(Base):
+    def setUp(self):
+        super().setUp()
+        self.server.fill_on_place = True
+
+    def run_sell(self, **kwargs):
+        store, evidence = self.fresh()
+        self.store_path, self.evidence = store, evidence
+        return run_fill_check(self.exchange, store, evidence, self.history, self.secrets,
+                              fill_orders=kwargs.pop("fill", True), sleep=lambda s: None,
+                              say=self.lines.append, side="sell")
+
+    def test_sell_plan_is_below_the_bid(self):
+        summary = self.run_sell(fill=False)
+        self.assertTrue(summary["completed"], self.lines)
+        plan = self.item("plan")
+        self.assertEqual(plan["side"], "sell")
+        self.assertEqual(plan["px"], "99900.0")        # 买一 100000.0 x 0.999 向下取整到 0.1
+        self.assertEqual(self.server.posts(), [])
+
+    def test_sell_fills_with_usdt_fee_and_everything_reconciles(self):
+        summary = self.run_sell()
+        self.assertTrue(summary["completed"], self.lines)
+        self.assertTrue(summary["cleanup_ok"])
+        body = json.loads(self.server.posts()[0]["body"])
+        self.assertEqual(body["side"], "sell")
+        self.assertEqual(body["ordType"], "limit")
+        place = self.item("place")
+        self.assertEqual(place["state"], "FILLED")
+        self.assertEqual(place["fee_ccy"], "USDT")            # 卖出手续费从 USDT 里扣
+        self.assertAlmostEqual(place["fee"], 0.002)           # 2 USDT x 0.1%
+        self.assertAlmostEqual(place["avg_price"], 100000.0)
+        after = self.item("reconcile_after_fill")
+        self.assertTrue(after["ok"])
+        self.assertLess(abs(after["btc_diff"]), 1e-9)         # BTC 只减少成交量
+        self.assertTrue(self.item("usdt_check")["ok"])
+        self.assertTrue(self.item("reconcile_final")["ok"])
+
+    def test_sell_record_keeps_side_fill_and_usdt_fee(self):
+        self.run_sell()
+        orders, _, halts = OrderStore(self.store_path).load()
+        record = [o for o in orders.values()][0]
+        self.assertEqual(record["side"], "sell")
+        self.assertEqual(record["state"], "FILLED")
+        self.assertEqual(record["fee_ccy"], "USDT")
+        self.assertEqual(halts, [])
+
+    def test_insufficient_btc_blocks_before_any_order(self):
+        self.server.balance_details = [
+            {"ccy": "BTC", "cashBal": "0.00001"}, {"ccy": "USDT", "cashBal": "123456.789"}]
+        summary = self.run_sell()
+        self.assertFalse(summary["completed"])
+        self.assertIn("持仓不足", summary["stopped"])
+        self.assertEqual(self.server.posts(), [])
+
+    def test_usdt_not_moving_after_sell_is_detected(self):
+        self.server.skip_usdt_in_balance = True
+        summary = self.run_sell()
+        self.assertFalse(summary["completed"])
+        self.assertIn("USDT", summary["stopped"])
+
+    def test_btc_not_moving_after_sell_is_detected_by_reconcile(self):
+        original = self.server._move_balance
+
+        def no_btc(ccy, delta):
+            if ccy != "BTC":
+                original(ccy, delta)
+
+        self.server._move_balance = no_btc
+        summary = self.run_sell()
+        self.assertFalse(summary["completed"])
+        after = self.item("reconcile_after_fill")
+        self.assertFalse(after["ok"])
+        self.assertTrue(any("BALANCE_MISMATCH" in i for i in after["issues"]))
+
+    def test_buy_then_sell_in_the_same_folder_both_reconcile(self):
+        buy = self.run_it()                              # 先买一笔
+        self.assertTrue(buy["completed"], self.lines)
+        sell = self.run_sell()                           # 再卖回去，旧的买单要被登记
+        self.assertTrue(sell["completed"], self.lines)
+        self.assertEqual(self.item("seed")["seeded"], 1)
+        self.assertTrue(self.item("reconcile_final")["ok"])
+
+    def test_not_filled_sell_is_canceled_without_retry(self):
+        self.server.fill_on_place = False
+        summary = self.run_sell()
+        self.assertFalse(summary["completed"])
+        self.assertIn("没有立刻成交", summary["stopped"])
+        self.assertEqual(len(self.server.posts()), 1)
+        self.assertEqual(self.live_orders(), [])
+        self.assertTrue(summary["cleanup_ok"])
+
+    def test_invalid_side_is_a_programming_error(self):
+        store, evidence = self.fresh()
+        with self.assertRaises(ValueError):
+            run_fill_check(self.exchange, store, evidence, self.history, self.secrets,
+                           side="hold")
+
+
 class TestNotFilled(Base):
     def test_not_filled_order_is_canceled_and_reported_without_retry(self):
         self.server.fill_on_place = False              # 限价单挂在盘口，没有成交
@@ -197,4 +296,3 @@ class TestGuards(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-

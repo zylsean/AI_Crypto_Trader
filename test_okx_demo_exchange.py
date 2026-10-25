@@ -112,14 +112,24 @@ class FakeOKX:
         order = self.orders[body["clOrdId"]]
         if self.fill_on_place:
             from decimal import Decimal
-            size, price = Decimal(body["sz"]), Decimal(self.ask)
-            fee = size * Decimal("0.001")
+            size = Decimal(body["sz"])
+            buying = body["side"] == "buy"
+            price = Decimal(self.ask if buying else self.bid)
+            if buying:
+                fee, fee_ccy = size * Decimal("0.001"), "BTC"       # 买：手续费从收到的 BTC 里扣
+            else:
+                fee, fee_ccy = size * price * Decimal("0.001"), "USDT"   # 卖：从收到的 USDT 里扣
             order.update(state="filled", accFillSz=body["sz"], fillSz=body["sz"],
                          avgPx=format(price, "f"), fee="-" + format(fee, "f"),
-                         feeCcy="BTC")
-            self._move_balance("BTC", size - (Decimal(0) if self.skip_fee_in_balance else fee))
-            if not self.skip_usdt_in_balance:
-                self._move_balance("USDT", -(size * price))
+                         feeCcy=fee_ccy)
+            if buying:
+                self._move_balance("BTC", size - (Decimal(0) if self.skip_fee_in_balance else fee))
+                if not self.skip_usdt_in_balance:
+                    self._move_balance("USDT", -(size * price))
+            else:
+                self._move_balance("BTC", -size)
+                if not self.skip_usdt_in_balance:
+                    self._move_balance("USDT", size * price - fee)
         return order
 
     def _move_balance(self, ccy, delta):
@@ -291,7 +301,7 @@ class TestPlaceOrder(unittest.TestCase):
             ("ORD0003", "buy", 0.000020001, "limit", 99000.0),  # 数量不是 lotSz 整数倍
             ("ORD0004", "buy", 0.00002, "market", None),        # 市价单未开放
             ("ORD0004B", "buy", 0.00002, "market", 99000.0),    # 市价单带价格也不放行
-            ("ORD0005", "sell", 0.00002, "limit", 99000.0),     # 卖单未开放
+            ("ORD0005", "hold", 0.00002, "limit", 99000.0),     # 非法方向
             ("ORD0006", "buy", 0.00002, "limit", None),         # 缺价格
             ("ORD0007", "buy", 0.00002, "limit", float("nan")),
             ("bad id!", "buy", 0.00002, "limit", 99000.0),      # 非法 clOrdId
@@ -301,6 +311,24 @@ class TestPlaceOrder(unittest.TestCase):
                 with self.assertRaises(LocalOrderRejected):
                     exchange.place_order(*args)
         self.assertEqual(server.posts(), [])
+
+    def test_limit_sell_body_and_local_checks(self):
+        exchange, server = make_exchange()
+        exchange.place_order("SELL0001", "sell", 0.00002, "limit", 99000.0)
+        body = json.loads(server.posts()[0]["body"])
+        self.assertEqual(body, {
+            "instId": "BTC-USDT", "tdMode": "cash", "clOrdId": "SELL0001",
+            "side": "sell", "ordType": "limit", "px": "99000.0", "sz": "0.00002",
+        })
+        for args in (
+            ("SELL0002", "sell", 0.000001, "limit", 99000.0),     # 低于 minSz
+            ("SELL0003", "sell", 0.00002, "limit", 99000.05),     # 价格不是 tickSz 整数倍
+            ("SELL0004", "sell", 0.00002, "market", None),        # 市价单未开放
+        ):
+            with self.subTest(args=args):
+                with self.assertRaises(LocalOrderRejected):
+                    exchange.place_order(*args)
+        self.assertEqual(len(server.posts()), 1)
 
     def test_local_rejection_is_both_rejected_and_value_error(self):
         exchange, _ = make_exchange()
@@ -469,6 +497,13 @@ class TestGetOrder(unittest.TestCase):
                 order = self.fetch(fee=raw)
                 self.assertEqual(order["fee"], 0.0)
                 self.assertEqual(math.copysign(1.0, order["fee"]), 1.0)
+
+    def test_filled_sell_has_positive_usdt_fee(self):
+        order = self.fetch(side="sell", state="filled", accFillSz="0.00002",
+                           avgPx="80000", fee="-0.0016", feeCcy="USDT")
+        self.assertEqual(order["side"], "sell")
+        self.assertAlmostEqual(order["fee"], 0.0016)
+        self.assertEqual(order["fee_ccy"], "USDT")
 
     def test_unknown_state_is_passed_through_raw(self):
         self.assertEqual(self.fetch(state="some_new_state")["state"], "some_new_state")
