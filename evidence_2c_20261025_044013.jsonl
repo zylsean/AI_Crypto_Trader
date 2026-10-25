@@ -1,0 +1,15 @@
+{"time": "2026-10-25T04:40:16+00:00", "step": "rules", "ok": true, "minSz": "0.00002", "lotSz": "0.00000001", "tickSz": "0.1"}
+{"time": "2026-10-25T04:40:18+00:00", "step": "clock", "ok": true, "offset_seconds": 0.32}
+{"time": "2026-10-25T04:40:20+00:00", "step": "balance", "ok": true, "usdt_positive": true}
+{"time": "2026-10-25T04:40:21+00:00", "step": "plan", "ok": true, "last": "80930.4", "px": "79311.7", "sz": "0.00002", "send_orders": true}
+{"time": "2026-10-25T04:40:23+00:00", "step": "place", "ok": true, "outcome": "accepted_not_confirmed", "cid": "3LnrB31Vh4eDgiJCb3NXbCIZ", "order_id": "4039981254229213184"}
+{"time": "2026-10-25T04:40:25+00:00", "step": "confirm", "ok": true, "cid": "3LnrB31Vh4eDgiJCb3NXbCIZ", "state": "live", "accFillSz": 0.0, "fee": -0.0, "fee_ccy": "BTC"}
+{"time": "2026-10-25T04:40:27+00:00", "step": "duplicate_clordid", "outcome": "rejected", "cid": "3LnrB31Vh4eDgiJCb3NXbCIZ", "error_type": "OKXOrderRejected", "s_code": "51016", "s_msg": "Client order ID already exists. ", "code": "1", "msg": "All operations failed"}
+{"time": "2026-10-25T04:40:28+00:00", "step": "cancel", "ok": true, "cid": "3LnrB31Vh4eDgiJCb3NXbCIZ"}
+{"time": "2026-10-25T04:40:30+00:00", "step": "after_cancel", "cid": "3LnrB31Vh4eDgiJCb3NXbCIZ", "state": "canceled", "accFillSz": 0.0, "fee": -0.0, "fee_ccy": "BTC"}
+{"time": "2026-10-25T04:40:33+00:00", "step": "reverse_below_minsz", "outcome": "rejected", "cid": "9qtXEhRq80kczX48nSnQJ2wB", "px": "79311.7", "sz": "0.000002", "error_type": "OKXOrderRejected", "s_code": "51020", "s_msg": "Your order should meet or exceed the minimum order amount.", "code": "1", "msg": "All operations failed"}
+{"time": "2026-10-25T04:40:34+00:00", "step": "reverse_off_tick", "outcome": "accepted_unexpectedly", "cid": "KL96JDFIfA2cqXU4Z41Xdjvo", "px": "79311.71", "sz": "0.00002"}
+{"time": "2026-10-25T04:40:37+00:00", "step": "cleanup_not_found", "cid": "9qtXEhRq80kczX48nSnQJ2wB"}
+{"time": "2026-10-25T04:40:40+00:00", "step": "cleanup_cancel_sent", "cid": "KL96JDFIfA2cqXU4Z41Xdjvo"}
+{"time": "2026-10-25T04:40:41+00:00", "step": "cleanup_final_state", "cid": "KL96JDFIfA2cqXU4Z41Xdjvo", "state": "canceled", "accFillSz": 0.0}
+{"time": "2026-10-25T04:40:43+00:00", "step": "final_check", "our_open_orders": 0}

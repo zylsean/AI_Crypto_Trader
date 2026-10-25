@@ -3,3 +3,8 @@ __pycache__/
 workspace_smoke_test.txt
 okx_demo_credentials.json
 *credentials*.json
+__pycache__/
+manager_check_*.jsonl
+fill_check_*.jsonl
+orders*.jsonl
+STOP

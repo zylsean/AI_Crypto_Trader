@@ -1,4 +1,3 @@
-
 """
 AI Crypto Trader - 阶段 2c 第 2 步：成交样本。
 
@@ -19,6 +18,7 @@ AI Crypto Trader - 阶段 2c 第 2 步：成交样本。
 - 如果没有立刻成交，订单会被撤销并如实报告，不会反复下单。
 - 无论中途出什么问题，结束时都会查询并撤销本次运行产生的挂单，并核实最终状态。
 - 证据文件只记录差额（对账差、USDT 差），不记录余额绝对数字，也没有凭证。
+  订单记录文件里有 BTC 基线余额（模拟盘数字），所以不要上传到公开仓库。
 """
 
 import getpass
@@ -252,7 +252,8 @@ def main():
     print("完成" if summary["completed"] else "未完成：" + str(summary["stopped"]))
     print("证据文件：", evidence_path.name)
     print("本次订单记录：", store_path.name)
-    print("请把证据文件和本次订单记录的内容发给我（没有凭证和余额绝对数字）。")
+    print("证据文件里没有凭证和余额绝对数字，可以发给我，也可以上传仓库。")
+    print("订单记录里含模拟盘的 BTC 基线余额：可以发给我，但不要上传到公开仓库。")
 
 
 if __name__ == "__main__":
