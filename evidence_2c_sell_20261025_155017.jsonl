@@ -1,0 +1,9 @@
+{"time": "2026-10-25T15:50:21+00:00", "step": "preflight", "ok": true, "offset_seconds": 0.141, "usdt_positive": true, "minSz": "0.00002", "lotSz": "0.00000001", "tickSz": "0.1"}
+{"time": "2026-10-25T15:50:21+00:00", "step": "plan", "ok": true, "side": "sell", "ask": "80694.1", "bid": "80692.2", "px": "80611.5", "sz": "0.00002", "notional": "1.612230", "fill_orders": true}
+{"time": "2026-10-25T15:50:27+00:00", "step": "seed", "ok": true, "seeded": 4, "problems": []}
+{"time": "2026-10-25T15:50:32+00:00", "step": "reconcile_1", "ok": true, "issues": []}
+{"time": "2026-10-25T15:50:37+00:00", "step": "place", "ok": true, "cid": "ACT179294343454877c29b", "state": "FILLED", "order_id": "4041330529982857216", "accFillSz": 2e-05, "avg_price": 80691.9, "fee": 0.001613838, "fee_ccy": "USDT", "halted": null}
+{"time": "2026-10-25T15:50:42+00:00", "step": "reconcile_after_fill", "ok": true, "issues": [], "btc_diff": 0.0, "fee": 0.001613838, "fee_ccy": "USDT", "accFillSz": 2e-05, "state": "FILLED"}
+{"time": "2026-10-25T15:50:42+00:00", "step": "usdt_check", "ok": true, "delta_minus_expected": 0.0}
+{"time": "2026-10-25T15:50:48+00:00", "step": "reconcile_final", "ok": true, "issues": []}
+{"time": "2026-10-25T15:50:48+00:00", "step": "cleanup_skipped", "cid": "ACT179294343454877c29b", "local_state": "FILLED"}

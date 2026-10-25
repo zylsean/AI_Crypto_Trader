@@ -1,0 +1,9 @@
+{"time": "2026-10-25T11:47:46+00:00", "step": "preflight", "ok": true, "offset_seconds": 0.394, "usdt_positive": true, "minSz": "0.00002", "lotSz": "0.00000001", "tickSz": "0.1"}
+{"time": "2026-10-25T11:47:46+00:00", "step": "plan", "ok": true, "ask": "80562.6", "px": "80643.1", "sz": "0.00002", "notional": "1.612862", "fill_orders": true}
+{"time": "2026-10-25T11:47:54+00:00", "step": "seed", "ok": true, "seeded": 3, "problems": []}
+{"time": "2026-10-25T11:47:57+00:00", "step": "reconcile_1", "ok": true, "issues": []}
+{"time": "2026-10-25T11:48:01+00:00", "step": "place", "ok": true, "cid": "ACT17929288783797b828f", "state": "FILLED", "order_id": "4040842109321854976", "accFillSz": 2e-05, "avg_price": 80542.7, "fee": 2e-08, "fee_ccy": "BTC", "halted": null}
+{"time": "2026-10-25T11:48:06+00:00", "step": "reconcile_after_fill", "ok": true, "issues": [], "btc_diff": 0.0, "fee": 2e-08, "fee_ccy": "BTC", "accFillSz": 2e-05, "state": "FILLED"}
+{"time": "2026-10-25T11:48:06+00:00", "step": "usdt_check", "ok": true, "spent_minus_expected": 0.0}
+{"time": "2026-10-25T11:48:10+00:00", "step": "reconcile_final", "ok": true, "issues": []}
+{"time": "2026-10-25T11:48:10+00:00", "step": "cleanup_skipped", "cid": "ACT17929288783797b828f", "local_state": "FILLED"}

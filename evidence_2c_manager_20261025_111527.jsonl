@@ -1,0 +1,9 @@
+{"time": "2026-10-25T11:15:39+00:00", "step": "preflight", "ok": true, "offset_seconds": 0.196, "usdt_positive": true, "minSz": "0.00002", "lotSz": "0.00000001", "tickSz": "0.1"}
+{"time": "2026-10-25T11:15:39+00:00", "step": "plan", "ok": true, "last": "80383.3", "px": "78775.6", "sz": "0.00002", "send_orders": true}
+{"time": "2026-10-25T11:15:48+00:00", "step": "seed", "ok": true, "seeded": 2, "problems": []}
+{"time": "2026-10-25T11:15:53+00:00", "step": "reconcile_1", "ok": true, "issues": []}
+{"time": "2026-10-25T11:15:57+00:00", "step": "place", "ok": true, "cid": "ACT17929269548159e8d49", "state": "LIVE", "order_id": "4040777576163164160", "halted": null}
+{"time": "2026-10-25T11:16:02+00:00", "step": "reconcile_after_restart", "ok": true, "issues": [], "cid": "ACT17929269548159e8d49", "state": "LIVE"}
+{"time": "2026-10-25T11:16:07+00:00", "step": "cancel", "ok": true, "cid": "ACT17929269548159e8d49", "state": "CANCELED", "filled": 0.0}
+{"time": "2026-10-25T11:16:12+00:00", "step": "reconcile_final", "ok": true, "issues": []}
+{"time": "2026-10-25T11:16:12+00:00", "step": "cleanup_skipped", "cid": "ACT17929269548159e8d49", "local_state": "CANCELED"}

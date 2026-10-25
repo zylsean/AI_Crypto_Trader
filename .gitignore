@@ -7,4 +7,5 @@ __pycache__/
 manager_check_*.jsonl
 fill_check_*.jsonl
 orders*.jsonl
+sell_check_*.jsonl
 STOP
