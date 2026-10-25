@@ -92,8 +92,18 @@ class OrderManager:
         self.max_consecutive_errors = max_consecutive_errors
         self.balance_tolerance = balance_tolerance
 
-        self.orders, self.baseline, _ = store.load()
-        self.halted = None
+        self.orders, self.baseline, halts = store.load()
+
+# 历史停机记录不能被启动流程静默忽略。
+self.halted = None
+if halts:
+    last_halt = halts[-1]
+    if isinstance(last_halt, dict):
+        self.halted = last_halt.get("reason", "PERSISTED_HALT")
+    else:
+        self.halted = str(last_halt)
+
+        self.reconciled = False
         self.reconciled = False
         self._errors = 0
 
@@ -197,13 +207,16 @@ class OrderManager:
         balance = self._call(self.exchange.get_balance)
         return float(balance.get(self.base_ccy, 0.0))
 
-    def place_order(self, side, size, ref_price, order_type="market", price=None):
+    def place_order(self, side, size, ref_price, order_type=None, price=None):
         if side not in ("buy", "sell"):
             raise ValueError("side 必须是 buy 或 sell。")
         if not _is_positive_finite(size):
             raise ValueError("size 必须是大于 0 的有限数字。")
         if not _is_positive_finite(ref_price):
             raise ValueError("ref_price 必须是大于 0 的有限数字。")
+        if  order_type is None:
+            raise ValueError("必须显式指定 order_type，禁止使用默认订单类型。")
+
         if order_type not in ("market", "limit"):
             raise ValueError("order_type 必须是 market 或 limit。")
         if order_type == "limit" and not _is_positive_finite(price):
@@ -240,12 +253,40 @@ class OrderManager:
             self.resolve_unknown(cid)
             return dict(self.orders[cid])
 
-        self.transition(cid, LIVE, order_id=(result or {}).get("order_id"))
-        self.refresh(cid)
-        return dict(self.orders[cid])
+        # 下单接口成功响应只表示请求已被受理，
+# 不能据此认定订单已经挂单。
+self._persist(
+    cid,
+    state=SENT,
+    order_id=(result or {}).get("order_id"),
+)
+
+# 必须进一步查询交易所订单详情。
+# 如果查不到，结果仍然不确定，必须停止后续交易。
+try:
+    ex=self._call(self.exchange.get_order, cid)
+except Exception as exc:
+    self.transition(cid, UNKNOWN, reason=self._safe(exc))
+    self.halt(f"ORDER_CONFIRMATION_FAILED:{cid}")
+    return dict(self.orders[cid])
+
+if ex is None:
+
+    self.transition(cid, UNKNOWN, reason="order_confirmation_missing")
+
+    self.halt(f"ORDER_CONFIRMATION_MISSING:{cid}")
+
+    return dict(self.orders[cid])
+
+self._apply_exchange_state(cid, ex)
+
+return dict(self.orders[cid])
+
+self._apply_exchange_state(cid, ex)
+return dict(self.orders[cid])
 
     # ---------- 查询与更新 ----------
-    def resolve_unknown(self, cid):
+def resolve_unknown(self, cid):
         """按客户端订单 ID 查询以解除 UNKNOWN。查不到就保持 UNKNOWN 并停止交易。"""
         for _ in range(self.max_polls):
             try:
@@ -260,7 +301,7 @@ class OrderManager:
         self.halt(f"UNRESOLVED_UNKNOWN:{cid}")
         return False
 
-    def refresh(self, cid):
+def refresh(self, cid):
         record = self.orders[cid]
         if record["state"] in TERMINAL:
             return dict(record)
@@ -275,7 +316,7 @@ class OrderManager:
         self._apply_exchange_state(cid, ex)
         return dict(self.orders[cid])
 
-    def refresh_open_orders(self):
+def refresh_open_orders(self):
         """更新所有非终态订单，返回处理的数量。"""
         count = 0
         for cid in [c for c, r in self.orders.items() if r["state"] in NON_TERMINAL]:
@@ -286,7 +327,7 @@ class OrderManager:
             count += 1
         return count
 
-    def cancel_order(self, cid):
+def cancel_order(self, cid):
         record = self.orders[cid]
         if record["state"] not in (LIVE, PARTIAL):
             raise ValueError("只能撤销 LIVE 或 PARTIAL 状态的订单。")
@@ -297,7 +338,7 @@ class OrderManager:
         return self.refresh(cid)
 
     # ---------- 启动对账 ----------
-    def _expected_base(self):
+def _expected_base(self):
         total = self.baseline["base"]
         for record in self.orders.values():
             filled = record.get("filled_size", 0.0) or 0.0
@@ -306,37 +347,44 @@ class OrderManager:
                 total -= record.get("fee", 0.0) or 0.0
         return total
 
-    def reconcile(self):
+def reconcile(self):
         """
         启动对账。返回 {"ok": bool, "issues": [...]}。
         只有对账完全一致才允许交易；有任何问题就 halt。
         只核对基础币余额，计价币余额的核对留给 2b/2c。
         """
-        self.halted = None
         self.reconciled = False
-        issues = []
+issues = []
 
-        try:
-            open_orders = self._call(self.exchange.get_open_orders)
-            recent_orders = self._call(self.exchange.get_recent_orders)
-            balance = self._call(self.exchange.get_balance)
-        except Exception as exc:
+# 历史安全停机必须经过明确的人工处理，
+# 不能因为重新运行 reconcile() 就自动解除。
+if self.halted:
+    return {
+        "ok": False,
+        "issues": [f"PERSISTED_HALT:{self.halted}"],
+    }
+
+try:
+    open_orders = self._call(self.exchange.get_open_orders)
+    recent_orders = self._call(self.exchange.get_recent_orders)
+    balance = self._call(self.exchange.get_balance)
+except Exception as exc:
             self.halt(f"RECONCILE_FETCH_FAILED:{exc}")
             return {"ok": False, "issues": [f"RECONCILE_FETCH_FAILED:{self._safe(exc)}"]}
 
-        exchange_orders = {}
-        for order in list(recent_orders) + list(open_orders):
+exchange_orders = {}
+for order in list(recent_orders) + list(open_orders):
             cid = order.get("client_order_id")
             if not cid:
                 issues.append(f"FOREIGN_NO_CLIENT_ID:{order.get('order_id')}")
             else:
                 exchange_orders[cid] = order
 
-        for cid in exchange_orders:
+for cid in exchange_orders:
             if cid not in self.orders:
                 issues.append(f"FOREIGN_ORDER:{cid}")
 
-        for cid, record in list(self.orders.items()):
+for cid, record in list(self.orders.items()):
             ex = exchange_orders.get(cid)
             state = record["state"]
             if state in TERMINAL:
@@ -359,12 +407,11 @@ class OrderManager:
                 continue
             self._apply_exchange_state(cid, ex)
 
-        if self.halted:
-            issues.append(f"HALTED_DURING_RECONCILE:{self.halted}")
+            if self.halted:issues.append(f"HALTED_DURING_RECONCILE:{self.halted}")
 
-        if self.baseline is None:
-            if self.orders:
-                issues.append("NO_BASELINE")
+            if self.baseline is None:
+                if self.orders:
+                  issues.append("NO_BASELINE")
             else:
                 self.baseline = {
                     "type": "baseline", "base_ccy": self.base_ccy,
@@ -372,17 +419,16 @@ class OrderManager:
                     "updated_ms": self.clock(),
                 }
                 self.store.append(self.baseline)
-        if self.baseline is not None:
-            expected = self._expected_base()
+            if self.baseline is not None:
+                expected = self._expected_base()
             actual = float(balance.get(self.base_ccy, 0.0))
             if abs(actual - expected) > self.balance_tolerance:
                 issues.append(
                     f"BALANCE_MISMATCH:expected={expected:.10f}:actual={actual:.10f}"
                 )
 
-        if issues:
-            self.halt("RECONCILE_FAILED:" + ";".join(issues[:3]))
+            if issues:
+                self.halt("RECONCILE_FAILED:" + ";".join(issues[:3]))
             return {"ok": False, "issues": issues}
-        self.reconciled = True
-        return {"ok": True, "issues": []}
-
+            self.reconciled = True
+            return {"ok": True, "issues": []}
